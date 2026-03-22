@@ -52,6 +52,14 @@ and Python's `requests` library do under the hood.
 | **TCP Socket** | Telephone call | Connect, send, receive, close |
 | **HTTP Client** | Letter writing | Build requests, read responses |
 | **JSON Client** | Structured letters | Talk to web APIs with JSON |
+| **TCP** | Registered mail | Reliable, ordered delivery with three-way handshake |
+| **UDP** | Shouting across a room | Fast, fire-and-forget datagrams |
+| **WebSocket** | Phone call | Persistent two-way connection over HTTP upgrade |
+| **SMTP** | Writing a postcard | Send email with the SMTP command sequence |
+| **FTP** | Sending packages | Transfer files with login, list, retrieve, store |
+| **Ping (ICMP)** | Knocking on the door | Check if a host is reachable and measure RTT |
+| **Base64** | Encoding photos for email | Convert binary data to safe ASCII text |
+| **TLS** | Secret handshake | Negotiate encrypted connections with cipher suites |
 
 ## Let's Start!
 
