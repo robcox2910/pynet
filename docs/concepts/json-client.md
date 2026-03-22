@@ -37,7 +37,7 @@ result = json_post("http://api.example.com/users", {
 - POST requests serialize dicts to JSON and send them.
 - Non-JSON responses raise clear errors.
 
-## What's Next?
+## Next Up
 
 You've learned every layer of networking! From URLs to DNS to HTTP
 to JSON APIs. These are the same tools that power every app, website,

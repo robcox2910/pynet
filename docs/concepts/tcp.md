@@ -26,14 +26,12 @@ Client                Server
 ## TCP in PyNet
 
 ```python
-from pynet.tcp import TCPSocket
+from pynet.tcp import TCPConnection, TCPState
 
-# Client side
-sock = TCPSocket()
-sock.connect("127.0.0.1", 8000)
-sock.send("Hello, server!")
-reply = sock.receive()
-sock.close()
+conn = TCPConnection()
+packets = conn.handshake()
+# packets = [SYN, SYN-ACK, ACK]
+print(conn.state)  # TCPState.ESTABLISHED
 ```
 
 ## What We Test

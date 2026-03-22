@@ -41,7 +41,8 @@ handshake = make_handshake("example.com", "/chat")
 
 # A text message frame
 frame = WebSocketFrame.text("Hello!")
-raw = frame.to_bytes()
+print(frame.opcode)   # 1 (text)
+print(frame.payload)  # "Hello!"
 ```
 
 ## What We Test

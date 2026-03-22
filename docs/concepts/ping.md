@@ -34,11 +34,13 @@ from pynet.ping import PingMessage
 
 # Create a ping request
 request = PingMessage.echo_request(sequence=1)
-print(request)  # "ICMP Echo Request seq=1"
+print(request.msg_type)  # 8 (echo request)
+print(request.sequence)  # 1
 
 # Create a ping reply
 reply = PingMessage.echo_reply(sequence=1, rtt_ms=12.5)
-print(reply)  # "ICMP Echo Reply seq=1 time=12.5ms"
+print(reply.msg_type)  # 0 (echo reply)
+print(reply.rtt_ms)    # 12.5
 ```
 
 ## What We Test

@@ -50,6 +50,13 @@ response = ServerHello(
     version=TLSVersion.TLS_1_3,
     chosen_cipher="AES_256_GCM",
 )
+
+# Or use negotiate() to pick the best shared cipher automatically:
+from pynet.tls import negotiate
+
+server_ciphers = ["AES_256_GCM", "AES_128_GCM"]
+result = negotiate(hello, server_ciphers)
+print(result.chosen_cipher)  # "AES_256_GCM"
 ```
 
 ## What We Test
@@ -59,7 +66,7 @@ response = ServerHello(
 - Version negotiation works correctly.
 - The handshake sequence is correct.
 
-## What's Next?
+## Next Up
 
 You've learned every major network protocol! TCP, UDP, WebSocket,
 SMTP, FTP, Ping, Base64, and TLS. These are the building blocks

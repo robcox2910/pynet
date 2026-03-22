@@ -28,12 +28,10 @@ one. Web pages use TCP because you need every byte of the HTML.
 ## UDP in PyNet
 
 ```python
-from pynet.udp import UDPSocket
+from pynet.udp import create_datagram
 
-sock = UDPSocket()
-sock.send_to("Hello!", "127.0.0.1", 9000)
-data, sender = sock.receive_from()
-sock.close()
+dg = create_datagram("Hello!", dest_port=9000, source_port=5000)
+print(dg.data)  # "Hello!"
 ```
 
 ## What We Test
