@@ -1,7 +1,5 @@
 """Test URL parsing."""
 
-import pytest
-
 from pynet.url import URL, parse_url
 
 # Named constants for default ports.

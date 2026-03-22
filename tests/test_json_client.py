@@ -29,7 +29,7 @@ class TestParseJsonBody:
 
     def test_non_object_json_raises_http_error(self) -> None:
         """A JSON array (not an object) raise HTTPError."""
-        response = Response(status=STATUS_OK, headers={}, body='[1, 2, 3]')
+        response = Response(status=STATUS_OK, headers={}, body="[1, 2, 3]")
 
         with pytest.raises(HTTPError, match="Expected a JSON object"):
             _parse_json_body(response)

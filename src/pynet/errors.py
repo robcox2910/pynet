@@ -9,7 +9,7 @@ class DNSError(PyNetError):
     """Raise when a DNS lookup fails."""
 
 
-class ConnectionError(PyNetError):
+class NetConnectionError(PyNetError):
     """Raise when a network connection fails."""
 
 

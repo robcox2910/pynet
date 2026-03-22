@@ -40,11 +40,7 @@ class TestParseResponse:
     def test_response_with_multiple_headers(self) -> None:
         """Parse multiple headers from a response."""
         raw = (
-            "HTTP/1.1 404 Not Found\r\n"
-            "Content-Type: text/plain\r\n"
-            "X-Custom: hello\r\n"
-            "\r\n"
-            "Not Found"
+            "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nX-Custom: hello\r\n\r\nNot Found"
         )
 
         result = _parse_response(raw)

@@ -7,8 +7,7 @@ browser visits a webpage.
 
 import socket
 
-from pynet.errors import ConnectionError as NetConnectionError
-from pynet.errors import HTTPError
+from pynet.errors import HTTPError, NetConnectionError
 from pynet.url import parse_url
 
 BUFFER_SIZE = 4096

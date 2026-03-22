@@ -6,6 +6,7 @@ HTTP client to make JSON API calls simple.
 """
 
 import json
+from typing import cast
 
 from pynet.errors import HTTPError
 from pynet.http import Response, get, post
@@ -77,6 +78,5 @@ def _parse_json_body(response: Response) -> dict[str, object]:
     if not isinstance(result, dict):
         msg = "Expected a JSON object, got a different type"
         raise HTTPError(msg)
-    from typing import cast
 
     return cast(dict[str, object], result)

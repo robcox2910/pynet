@@ -39,7 +39,7 @@ def resolve(hostname: str) -> str:
         raise DNSError(msg)
 
     # Return the first IPv4 address found.
-    return results[0][4][0]
+    return str(results[0][4][0])
 
 
 def is_valid_ipv4(address: str) -> bool:
