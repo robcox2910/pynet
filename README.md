@@ -85,6 +85,14 @@ print(data["name"])  # The user's name from the API
 - **HTTP Client** -- Send GET and POST requests over raw TCP sockets
 - **JSON Client** -- Talk to web APIs with structured data
 - **Custom Errors** -- Clear error types for DNS, connection, and HTTP failures
+- **TCP** -- Reliable, ordered byte-stream delivery
+- **UDP** -- Fast, connectionless datagrams
+- **WebSocket** -- Full-duplex communication over a single connection
+- **SMTP** -- Send emails programmatically
+- **FTP** -- Transfer files between machines
+- **Ping/ICMP** -- Check if a host is reachable
+- **Base64** -- Encode and decode binary data as text
+- **TLS** -- Encrypted connections with certificates
 - **CLI Tool** -- Interactive demo of networking concepts
 - **100% Typed** -- Full type annotations with strict Pyright checking
 
@@ -115,15 +123,17 @@ Full documentation with kid-friendly explanations of every concept:
 
 PyNet is part of a series of educational "build it from scratch" projects:
 
-| Project | What it builds |
-|---------|---------------|
-| [PyOS](https://github.com/robcox2910/pyos) | An operating system |
-| [Pebble](https://github.com/robcox2910/pebble) | A database engine |
-| [PyDB](https://github.com/robcox2910/pydb) | A SQL database |
-| [PyStack](https://github.com/robcox2910/pystack) | A network stack |
-| [PyWeb](https://github.com/robcox2910/pyweb) | An HTTP framework |
-| [PyGit](https://github.com/robcox2910/pygit) | A version control system |
-| [PyCrypt](https://github.com/robcox2910/pycrypt) | A cryptography library |
+| Project | What It Teaches |
+|---------|----------------|
+| [PyOS](https://github.com/robcox2910/py-os) | Operating systems |
+| [Pebble](https://github.com/robcox2910/pebble-lang) | Compilers and programming languages |
+| [PyDB](https://github.com/robcox2910/pydb) | Relational databases |
+| [PyStack](https://github.com/robcox2910/pystack) | Full-stack integration |
+| [PyWeb](https://github.com/robcox2910/pyweb) | HTTP web servers |
+| [PyGit](https://github.com/robcox2910/pygit) | Version control |
+| [PyCrypt](https://github.com/robcox2910/pycrypt) | Cryptography |
+| [PySearch](https://github.com/robcox2910/pysearch) | Full-text search |
+| [PyMQ](https://github.com/robcox2910/pymq) | Message queues |
 
 ## License
 
