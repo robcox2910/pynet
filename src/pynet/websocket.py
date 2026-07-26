@@ -20,7 +20,11 @@ OPCODE_PING = 9
 OPCODE_PONG = 10
 
 WEBSOCKET_VERSION = "13"
-WEBSOCKET_MAGIC_KEY = "dGhlIHNhbXBsZSBub25jZQ=="
+# The client's Sec-WebSocket-Key: a random nonce the client picks for each
+# handshake. (Not to be confused with the WebSocket "magic string" -- the
+# fixed server GUID 258EAFA5-E914-47DA-95CA-C5AB0DC85B11 that a real server
+# appends to this key when computing its Sec-WebSocket-Accept reply.)
+WEBSOCKET_CLIENT_KEY = "dGhlIHNhbXBsZSBub25jZQ=="
 
 
 @dataclass(frozen=True)
@@ -80,7 +84,7 @@ def make_handshake(host: str, path: str = "/") -> str:
         f"Host: {host}",
         "Upgrade: websocket",
         "Connection: Upgrade",
-        f"Sec-WebSocket-Key: {WEBSOCKET_MAGIC_KEY}",
+        f"Sec-WebSocket-Key: {WEBSOCKET_CLIENT_KEY}",
         f"Sec-WebSocket-Version: {WEBSOCKET_VERSION}",
         "",
         "",

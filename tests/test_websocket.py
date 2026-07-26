@@ -8,7 +8,7 @@ from pynet.websocket import (
     OPCODE_PING,
     OPCODE_PONG,
     OPCODE_TEXT,
-    WEBSOCKET_MAGIC_KEY,
+    WEBSOCKET_CLIENT_KEY,
     WEBSOCKET_VERSION,
     WebSocketFrame,
     make_handshake,
@@ -89,7 +89,7 @@ class TestMakeHandshake:
         """Include the Sec-WebSocket-Key header."""
         req = make_handshake("example.com")
 
-        assert f"Sec-WebSocket-Key: {WEBSOCKET_MAGIC_KEY}" in req
+        assert f"Sec-WebSocket-Key: {WEBSOCKET_CLIENT_KEY}" in req
 
     def test_handshake_custom_path(self) -> None:
         """Use the specified path in the GET line."""

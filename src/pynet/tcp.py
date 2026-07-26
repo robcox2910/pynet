@@ -72,7 +72,7 @@ class TCPConnection:
 
         Walk through the state machine:
         1. Client sends SYN            (CLOSED → SYN_SENT)
-        2. Server replies SYN-ACK      (SYN_SENT → SYN_SENT)
+        2. Server replies SYN-ACK      (client stays in SYN_SENT)
         3. Client sends ACK            (SYN_SENT → ESTABLISHED)
 
         Returns:
