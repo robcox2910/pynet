@@ -6,9 +6,10 @@ browser visits a webpage.
 """
 
 import socket
+from urllib.parse import urlencode
 
 from pynet.errors import HTTPError, NetConnectionError
-from pynet.url import parse_url
+from pynet.url import URL, parse_url
 
 BUFFER_SIZE = 4096
 HTTP_VERSION = "HTTP/1.1"
@@ -62,6 +63,25 @@ def post(url: str, body: str = "", headers: dict[str, str] | None = None) -> Res
     return _request("POST", url, body=body, headers=headers)
 
 
+def _request_target(parsed: URL) -> str:
+    """Build the request target -- the path plus any query string.
+
+    Like writing the full room number on an envelope: "/users" alone
+    reaches the wrong desk, so we tack the "?page=2" back on to land
+    exactly where the caller asked.
+
+    Args:
+        parsed: The parsed URL whose path and query we combine.
+
+    Returns:
+        The path, followed by "?" and the url-encoded query if present.
+
+    """
+    if parsed.query:
+        return f"{parsed.path}?{urlencode(parsed.query)}"
+    return parsed.path
+
+
 def _request(
     method: str,
     url: str,
@@ -80,10 +100,18 @@ def _request(
         The parsed response.
 
     Raises:
-        NetConnectionError: If the connection fails.
+        NetConnectionError: If the connection fails, or if the URL uses
+            https:// (this from-scratch client speaks plain HTTP only).
 
     """
     parsed = parse_url(url)
+    if parsed.scheme == "https":
+        msg = (
+            "HTTPS is not supported: PyNet's HTTP client speaks plain, "
+            "unencrypted HTTP only. Use an http:// URL. (Wrapping the socket "
+            "in TLS is a great exercise to try yourself -- see pynet.tls.)"
+        )
+        raise NetConnectionError(msg)
     all_headers = {
         "Host": parsed.host,
         "Connection": "close",
@@ -95,7 +123,7 @@ def _request(
         all_headers["Content-Length"] = str(len(body.encode("utf-8")))
 
     # Build the raw HTTP request.
-    request_line = f"{method} {parsed.path} {HTTP_VERSION}"
+    request_line = f"{method} {_request_target(parsed)} {HTTP_VERSION}"
     header_lines = [f"{k}: {v}" for k, v in all_headers.items()]
     raw_request = "\r\n".join([request_line, *header_lines, "", body])
 

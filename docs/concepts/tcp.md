@@ -30,7 +30,7 @@ from pynet.tcp import TCPConnection, TCPState
 
 conn = TCPConnection()
 packets = conn.handshake()
-# packets = [SYN, SYN-ACK, ACK]
+# packets = (SYN, SYN-ACK, ACK)  -- a tuple of three TCPPackets
 print(conn.state)  # TCPState.ESTABLISHED
 ```
 

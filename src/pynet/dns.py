@@ -45,6 +45,10 @@ def resolve(hostname: str) -> str:
 def is_valid_ipv4(address: str) -> bool:
     """Check whether a string is a valid IPv4 address.
 
+    Like checking a house number is written properly: it needs four
+    numbers split by dots, each from 0 to 255, and no sneaky leading
+    zeros ("192.168.001.1" is not a real address).
+
     Args:
         address: The string to check.
 
@@ -56,5 +60,13 @@ def is_valid_ipv4(address: str) -> bool:
     expected_parts = 4
     if len(parts) != expected_parts:
         return False
+    return all(_is_valid_octet(p) for p in parts)
+
+
+def _is_valid_octet(part: str) -> bool:
+    """Check whether one dotted piece of an IPv4 address is valid."""
     max_octet = 255
-    return all(p.isdigit() and 0 <= int(p) <= max_octet for p in parts)
+    # Reject non-digits, and leading zeros like "01" or "001".
+    if not part.isdigit() or (len(part) > 1 and part[0] == "0"):
+        return False
+    return 0 <= int(part) <= max_octet

@@ -52,6 +52,9 @@ class TestIsValidIpv4:
             "",
             "192.168.1",
             "192.168.1.1.1",
+            "192.168.001.1",
+            "192.168.01.1",
+            "010.0.0.1",
         ],
     )
     def test_invalid_addresses_return_false(self, address: str) -> None:

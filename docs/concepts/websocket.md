@@ -48,8 +48,12 @@ print(frame.payload)  # "Hello!"
 ## What We Test
 
 - Handshake request is valid HTTP with upgrade headers.
-- Text frames encode and decode correctly.
-- Close frames signal disconnection.
+- Text frames carry the right opcode and payload.
+- Close frames use the close opcode and an empty payload.
+
+In PyNet a `WebSocketFrame` is a simple data holder (opcode + payload);
+it does not serialise itself to the real over-the-wire binary format.
+Encoding a frame into actual bytes is a great exercise to try yourself.
 
 ## Next Up
 

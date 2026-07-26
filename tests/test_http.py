@@ -2,11 +2,46 @@
 
 import pytest
 
-from pynet.errors import HTTPError
-from pynet.http import Response, _parse_response
+from pynet.errors import HTTPError, NetConnectionError
+from pynet.http import Response, _parse_response, _request_target, get, post
+from pynet.url import parse_url
 
 STATUS_OK = 200
 STATUS_NOT_FOUND = 404
+
+
+class TestRequestTarget:
+    """Test that the request line keeps the query string."""
+
+    def test_path_only_when_no_query(self) -> None:
+        """A URL with no query yields just the path."""
+        assert _request_target(parse_url("http://api/users")) == "/users"
+
+    def test_query_is_reattached(self) -> None:
+        """The query string is put back on the request target."""
+        assert _request_target(parse_url("http://api/users?page=2")) == "/users?page=2"
+
+    def test_multiple_query_params_are_encoded(self) -> None:
+        """Multiple query params are url-encoded onto the target."""
+        target = _request_target(parse_url("http://api/search?q=hello world&n=3"))
+
+        assert target.startswith("/search?")
+        assert "q=hello+world" in target
+        assert "n=3" in target
+
+
+class TestHttpsNotSupported:
+    """Test that https:// URLs fail with a clear error instead of plaintext."""
+
+    def test_get_https_raises(self) -> None:
+        """GET on an https:// URL raises a clear HTTPS-not-supported error."""
+        with pytest.raises(NetConnectionError, match="HTTPS is not supported"):
+            get("https://example.com/")
+
+    def test_post_https_raises(self) -> None:
+        """POST on an https:// URL raises a clear HTTPS-not-supported error."""
+        with pytest.raises(NetConnectionError, match="HTTPS is not supported"):
+            post("https://example.com/", body="hi")
 
 
 class TestParseResponse:

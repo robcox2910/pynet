@@ -8,6 +8,11 @@ of letters so you can paste it into an email.
 The algorithm groups every 3 bytes (24 bits) into four 6-bit chunks,
 then maps each chunk to a character from the Base64 alphabet. If the
 input length is not a multiple of 3, the output is padded with '='.
+
+``b64_encode`` accepts raw ``bytes`` (like the contents of a photo)
+*or* a text string for convenience. ``b64_decode`` in this from-scratch
+version turns Base64 back into a text string; recovering raw bytes for
+a photo round-trip is a great exercise to try yourself.
 """
 
 from __future__ import annotations
@@ -22,20 +27,21 @@ INPUT_GROUP_SIZE = 3
 OUTPUT_GROUP_SIZE = 4
 
 
-def b64_encode(data: str) -> str:
-    """Encode a text string to Base64.
+def b64_encode(data: bytes | str) -> str:
+    """Encode raw bytes (or text) to Base64.
 
     Convert each group of 3 bytes into 4 Base64 characters, padding
-    with '=' when the input length is not a multiple of 3.
+    with '=' when the input length is not a multiple of 3. Pass real
+    binary like a photo's bytes, or a string (encoded as UTF-8 for you).
 
     Args:
-        data: The plain-text string to encode.
+        data: The bytes to encode, or a text string.
 
     Returns:
         The Base64-encoded string.
 
     """
-    raw = data.encode("utf-8")
+    raw = data.encode("utf-8") if isinstance(data, str) else data
     result: list[str] = []
 
     for i in range(0, len(raw), INPUT_GROUP_SIZE):

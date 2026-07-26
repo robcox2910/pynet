@@ -36,6 +36,14 @@ class TestB64Encode:
         """Encode 'ab' and verify single-pad output."""
         assert b64_encode("ab") == "YWI="
 
+    def test_encodes_raw_bytes(self) -> None:
+        """Encode raw binary bytes (e.g. a PNG header), not just text."""
+        assert b64_encode(bytes([0x89, 0x50, 0x4E])) == "iVBO"
+
+    def test_bytes_and_str_agree_for_ascii(self) -> None:
+        """Encoding bytes matches encoding the equivalent text."""
+        assert b64_encode(b"Hello") == b64_encode("Hello")
+
 
 class TestB64Decode:
     """Test the b64_decode function."""
