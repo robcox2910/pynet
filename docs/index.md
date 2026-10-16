@@ -67,6 +67,7 @@ and Python's `requests` library do under the hood.
 | **[Worker Threads](concepts/threads.md)** | Kitchen helper | Run blocking calls in threads without freezing the loop |
 | **[Streams](concepts/streams.md)** | Water pipes with a tap | Non-blocking TCP and pipe readers/writers with backpressure |
 | **[Subprocesses](concepts/subprocesses.md)** | Helpers and baby monitors | Run many commands at once, stream their output, notice exits, kill process groups |
+| **[Framing](concepts/framing.md)** | Envelopes with the page count on the front | Length-prefixed messages so the reader knows where each one ends |
 
 ## Let's Start!
 

@@ -27,3 +27,19 @@ class QueueFull(PyNetError):  # noqa: N818
 
 class ConnectionClosedError(NetConnectionError):
     """Raise when a connection has been closed or reset and cannot be used."""
+
+
+class FrameTooLargeError(PyNetError):
+    """Raise when a frame's length is over the allowed maximum.
+
+    Args:
+        size: The length the frame claimed or tried to use.
+        limit: The largest length allowed.
+
+    """
+
+    def __init__(self, size: int, limit: int) -> None:
+        """Remember the offending ``size`` and the ``limit``."""
+        super().__init__(f"frame of {size} bytes exceeds the limit of {limit} bytes")
+        self.size = size
+        self.limit = limit
