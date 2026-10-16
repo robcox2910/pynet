@@ -150,5 +150,5 @@ top-to-bottom code instead of a tangle of callbacks.
 
 ## Next Up
 
-Back to the [Event Loop](event-loop.md) overview, or see how the loop
-wakes itself up from other threads: [The Self-Pipe Trick](self-pipe-trick.md).
+Learn how to stop a task that takes too long, and how to wait for many
+tasks at once: [Cancellation and Timeouts](cancellation-and-timeouts.md).

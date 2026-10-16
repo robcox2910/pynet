@@ -6,6 +6,7 @@ diners' orders: plain ``async def`` coroutines that the waiter serves a
 little at a time, whenever the future they are waiting on is ready.
 """
 
+from pynet.loop.control import Timeout, gather, timeout, wait_for
 from pynet.loop.futures import Cancelled, Future, InvalidStateError
 from pynet.loop.reactor import ErrorContext, EventLoop, Handle, TimerHandle
 from pynet.loop.tasks import Task, current_task, get_running_loop, run, sleep, spawn
@@ -18,10 +19,14 @@ __all__ = [
     "Handle",
     "InvalidStateError",
     "Task",
+    "Timeout",
     "TimerHandle",
     "current_task",
+    "gather",
     "get_running_loop",
     "run",
     "sleep",
     "spawn",
+    "timeout",
+    "wait_for",
 ]

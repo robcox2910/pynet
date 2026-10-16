@@ -62,6 +62,7 @@ and Python's `requests` library do under the hood.
 | **TLS** | Secret handshake | Negotiate encrypted connections with cipher suites |
 | **[Event Loop](concepts/event-loop.md)** | The waiter | Run callbacks and timers in one thread without spinning |
 | **[Tasks and Await](concepts/tasks-and-await.md)** | Bookmarks in recipes | Pause one coroutine, run another, resume exactly where it left off |
+| **[Cancellation and Timeouts](concepts/cancellation-and-timeouts.md)** | The referee's whistle | Stop a block when time runs out; gather many results at once |
 
 ## Let's Start!
 
