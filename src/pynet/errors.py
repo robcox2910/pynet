@@ -15,3 +15,11 @@ class NetConnectionError(PyNetError):
 
 class HTTPError(PyNetError):
     """Raise when an HTTP request or response is invalid."""
+
+
+class QueueEmpty(PyNetError):  # noqa: N818
+    """Raise when ``get_nowait`` finds a queue with nothing in it."""
+
+
+class QueueFull(PyNetError):  # noqa: N818
+    """Raise when ``put_nowait`` finds a queue with no room."""

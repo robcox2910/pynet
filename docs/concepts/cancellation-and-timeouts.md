@@ -137,5 +137,6 @@ In tests, pass `clock=FakeClock(autojump=True)` to `run`, and even a
 
 ## Next Up
 
-Back to [Tasks and Await](tasks-and-await.md), or the
+[Sync Primitives](sync-primitives.md) -- Event, Queue, Lock and
+Semaphore. Or back to [Tasks and Await](tasks-and-await.md), or the
 [Event Loop](event-loop.md) overview.
