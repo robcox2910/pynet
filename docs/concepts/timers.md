@@ -27,8 +27,9 @@ next one is instant.
 
 ## Testing Time with a FakeClock
 
-Real clocks make slow, flaky tests. `FakeClock` is a clock you wind by
-hand:
+Real clocks make slow, flaky tests. `FakeClock` is a pretend clock you
+wind forward by hand. A loop using it never really sleeps, so a
+five-second timer is tested instantly:
 
 ```python
 from pynet.loop import EventLoop
@@ -43,6 +44,11 @@ loop.run_once()   # nothing yet
 clock.advance(1.0)
 loop.run_once()   # prints "ding" -- no real waiting
 ```
+
+If you would rather not wind it yourself, `FakeClock(autojump=True)` winds
+itself forward whenever everyone is just waiting: the loop jumps straight
+to the next timer and fires it on that same turn. A 30-second backoff then
+takes microseconds.
 
 ## When to Use
 

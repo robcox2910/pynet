@@ -13,9 +13,16 @@ class FakeClock:
     ``advance`` to move time forward.
     """
 
-    def __init__(self, start: float = 0.0) -> None:
-        """Create a clock showing ``start`` seconds."""
+    virtual = True
+
+    def __init__(self, start: float = 0.0, *, autojump: bool = False) -> None:
+        """Create a clock showing ``start`` seconds.
+
+        With ``autojump=True`` the loop winds the clock forward to the next
+        timer whenever everyone is just waiting, firing it on that same turn.
+        """
         self._now = start
+        self.autojump = autojump
 
     def __call__(self) -> float:
         """Return the current fake time in seconds."""
@@ -24,3 +31,7 @@ class FakeClock:
     def advance(self, seconds: float) -> None:
         """Move the clock forward by ``seconds``."""
         self._now += seconds
+
+    def jump_to(self, when: float) -> None:
+        """Move the clock to ``when``, never backwards."""
+        self._now = max(self._now, when)

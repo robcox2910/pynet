@@ -125,13 +125,28 @@ class EventLoop:
     def run_once(self) -> None:
         """Run a single turn: wait, collect due timers, run ready callbacks.
 
+        A "virtual" clock (one with ``virtual = True``, such as
+        ``FakeClock``) never makes the loop really sleep.
+
         Until Task 2 registers a wakeup socket, a selector with no file
         descriptors cannot be woken. Waiting forever on it would hang, so
         in that case (nothing registered, nothing scheduled) the turn
         returns immediately instead of blocking.
         """
         timeout = self.next_timeout()
-        if timeout is not None or self._selector.get_map():
+        virtual = bool(getattr(self._clock, "virtual", False))
+        events: list[object] = []
+        if virtual:
+            # A pretend clock never really sleeps: poll the selector only.
+            if self._selector.get_map():
+                events = list(self._selector.select(0))
+            if not events and timeout is not None and timeout > 0:
+                # Nothing ready, no I/O, a timer pending: an autojump clock
+                # winds itself forward so the timer fires on this same turn.
+                jump_to = getattr(self._clock, "jump_to", None)
+                if callable(jump_to) and getattr(self._clock, "autojump", False):
+                    jump_to(self._timers[0].when)
+        elif timeout is not None or self._selector.get_map():
             self._selector.select(timeout)
         now = self.time()
         while self._timers and self._timers[0].when <= now:

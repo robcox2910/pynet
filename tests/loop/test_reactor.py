@@ -1,6 +1,7 @@
 """Test the reactor: callbacks, timers, fake clock and error reporting."""
 
 import logging
+import time
 
 import pytest
 
@@ -13,6 +14,9 @@ TWO = 2.0
 THREE = 3.0
 EXPECTED_ZERO = 0.0
 START_TIME = 100.0
+LONG = 1000.0
+FAST = 1.0
+JUMP_START = 5.0
 
 
 class TestCallSoon:
@@ -285,3 +289,53 @@ class TestFakeClock:
         clock.advance(SHORT)
 
         assert clock() == START_TIME + SHORT
+
+
+class TestVirtualClock:
+    """Test that fake clocks never make the loop really sleep."""
+
+    def test_virtual_clock_never_really_sleeps(self) -> None:
+        """Return at once from run_once with a far timer pending."""
+        loop = EventLoop(clock=FakeClock())
+        fired: list[str] = []
+        loop.call_later(LONG, lambda: fired.append("x"))
+
+        began = time.monotonic()
+        loop.run_once()
+
+        assert time.monotonic() - began < FAST
+        assert fired == []
+
+    def test_autojump_fires_far_timer_fast(self) -> None:
+        """Wind the clock forward when idle so far timers fire quickly."""
+        clock = FakeClock(autojump=True)
+        loop = EventLoop(clock=clock)
+        fired: list[str] = []
+        loop.call_later(LONG, lambda: fired.append("a"))
+        loop.call_later(LONG * 2, loop.stop)
+
+        began = time.monotonic()
+        loop.run_forever()
+
+        assert time.monotonic() - began < FAST
+        assert fired == ["a"]
+        assert clock() >= LONG * 2
+
+    def test_autojump_fires_on_same_turn(self) -> None:
+        """Fire the earliest timer in the very run_once that jumps."""
+        clock = FakeClock(autojump=True)
+        loop = EventLoop(clock=clock)
+        fired: list[str] = []
+        loop.call_later(LONG, lambda: fired.append("x"))
+
+        loop.run_once()
+
+        assert fired == ["x"]
+
+    def test_jump_to_never_goes_backwards(self) -> None:
+        """Ignore jumps into the past."""
+        clock = FakeClock(JUMP_START)
+        clock.jump_to(SHORT)
+        assert clock() == JUMP_START
+        clock.jump_to(DELAY * 2)
+        assert clock() == DELAY * 2
