@@ -23,3 +23,7 @@ class QueueEmpty(PyNetError):  # noqa: N818
 
 class QueueFull(PyNetError):  # noqa: N818
     """Raise when ``put_nowait`` finds a queue with no room."""
+
+
+class ConnectionClosedError(NetConnectionError):
+    """Raise when a connection has been closed or reset and cannot be used."""

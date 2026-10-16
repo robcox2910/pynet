@@ -81,6 +81,7 @@ max-args = 9
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = ["S101", "SLF001", "S104"]
+"examples/**/*.py" = ["T201"]
 
 [tool.ruff.format]
 quote-style = "double"

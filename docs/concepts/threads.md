@@ -69,5 +69,5 @@ with `add_reader`, timers): that is cheaper than a thread.
 
 ## Next Up
 
-Back to the [Event Loop](event-loop.md) overview. Streams will use
-`run_in_thread` for DNS lookups.
+Head to [Streams](streams.md), which use `run_in_thread` for DNS
+lookups so connecting by name never freezes the loop.
