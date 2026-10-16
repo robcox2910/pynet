@@ -1,5 +1,6 @@
 """Test non-blocking TCP and pipe streams."""
 
+import errno
 import importlib.util
 import os
 import socket
@@ -459,6 +460,65 @@ class TestWriting:
             return line
 
         assert _serve_and(handler, client) == str(total).encode() + b"\n"
+
+    def test_reset_found_by_reader_fails_pending_drain(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Raise from a pending drain() when the reader is the one that sees the reset."""
+        shrunk = Event()
+
+        async def handler(_reader: StreamReader, writer: StreamWriter) -> None:
+            """Shrink the receive buffer, send one byte, then never read."""
+            _shrink(writer, socket.SO_RCVBUF)
+            shrunk.set()
+            writer.write(LATE_BYTE)
+            await sleep(LONG)
+
+        def reset(_size: int) -> bytes:
+            """Pretend the peer reset the connection."""
+            raise ConnectionResetError(errno.ECONNRESET, os.strerror(errno.ECONNRESET))
+
+        async def client(server: Server) -> bytes:
+            """Leave a drain pending, then let a read discover the reset."""
+            reader, writer = await open_connection(HOST, server.port)
+            _shrink(writer, socket.SO_SNDBUF)
+            await shrunk.wait()
+            writer.write(bytes(BACKPRESSURE_FACTOR * DEFAULT_HIGH_WATER))
+            draining = spawn(writer.drain())
+            await sleep(TICK)
+            assert not draining.done()
+            monkeypatch.setattr(reader._transport, "recv", reset)
+            eof = await reader.read(1)
+            with pytest.raises(ConnectionClosedError, match="reset"):
+                await wait_for(draining, LONG)
+            return eof
+
+        assert _serve_and(handler, client) == b""
+
+    def test_abort_fails_pending_drain(self) -> None:
+        """Raise from a pending drain() when abort() throws the buffer away."""
+        shrunk = Event()
+
+        async def handler(_reader: StreamReader, writer: StreamWriter) -> None:
+            """Shrink the receive buffer, then never read."""
+            _shrink(writer, socket.SO_RCVBUF)
+            shrunk.set()
+            await sleep(LONG)
+
+        async def client(server: Server) -> None:
+            """Abort while a drain is waiting."""
+            _, writer = await open_connection(HOST, server.port)
+            _shrink(writer, socket.SO_SNDBUF)
+            await shrunk.wait()
+            writer.write(bytes(BACKPRESSURE_FACTOR * DEFAULT_HIGH_WATER))
+            draining = spawn(writer.drain())
+            await sleep(TICK)
+            assert not draining.done()
+            writer.abort()
+            with pytest.raises(ConnectionClosedError, match="buffered"):
+                await wait_for(draining, LONG)
+
+        _serve_and(handler, client)
 
     def test_write_after_close_raises(self) -> None:
         """Raise ConnectionClosedError when writing to a closed writer."""

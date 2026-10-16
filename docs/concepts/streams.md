@@ -54,7 +54,8 @@ Some house rules:
   then closes. `abort()` throws the bucket away and closes now.
 - **Peer reset.** If the other side resets the connection, the writer
   records it. The `write` that finds out returns quietly; the next
-  `drain()` or `write()` raises `ConnectionClosedError`. The reader sees
+  `drain()` or `write()` raises `ConnectionClosedError` -- and so does a
+  `drain()` that was already waiting, whoever found the reset. The reader sees
   a reset as plain EOF (bytes already buffered are still handed over).
 - **EOF.** `read()` returns `b""` at EOF. `read_exactly(n)` and
   `read_until(sep)` raise `IncompleteReadError`, whose `.partial` holds
@@ -121,7 +122,8 @@ There is a complete echo server in `examples/echo_server.py`:
 - A peer that never reads makes `drain()` wait (it times out), and a
   peer that does read lets it finish.
 - Writing after `close()`, and draining after a peer reset, raise
-  `ConnectionClosedError`.
+  `ConnectionClosedError` -- even when the *reader* is the one that
+  finds the reset, or `abort()` throws the bucket away mid-`drain()`.
 - A handler that raises is reported, its connection is closed, and the
   server accepts the next connection.
 - A read cancelled by a timeout removes its fd from the selector, and

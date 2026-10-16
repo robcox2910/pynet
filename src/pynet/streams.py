@@ -51,7 +51,8 @@ ACCEPT_BATCH = 16
 CONNECT_IN_PROGRESS = frozenset({errno.EINPROGRESS, errno.EWOULDBLOCK, errno.EAGAIN})
 HANDLER_ERROR_MESSAGE = "Exception in connection handler"
 ACCEPT_ERROR_MESSAGE = "Error accepting a connection"
-CLOSED_MESSAGE = "write after close"
+CLOSED_MESSAGE = "connection is closed"
+LOST_MESSAGE = "connection closed before the buffered data was sent"
 
 type Handler = Callable[[StreamReader, StreamWriter], Awaitable[None]]
 type _AddrInfo = tuple[int, int, int, tuple[Any, ...]]
@@ -108,6 +109,11 @@ class _Transport:
         self.error: OSError | None = None
         self.reader: StreamReader | None = None
         self._close_waiters: list[Future[None]] = []
+        self._close_callbacks: list[Callable[[], None]] = []
+
+    def add_close_callback(self, callback: Callable[[], None]) -> None:
+        """Call ``callback`` (once) when the transport closes, by any path."""
+        self._close_callbacks.append(callback)
 
     def recv(self, size: int) -> bytes:
         """Read up to ``size`` bytes without blocking."""
@@ -148,6 +154,9 @@ class _Transport:
             os.close(self.fd)
         if self.reader is not None:
             self.reader.feed_eof()
+        callbacks, self._close_callbacks = self._close_callbacks, []
+        for callback in callbacks:
+            callback()
         waiters, self._close_waiters = self._close_waiters, []
         for waiter in waiters:
             if not waiter.done():
@@ -338,6 +347,8 @@ class StreamWriter:
         self._closing = False
         self._watching = False
         self._drain_waiters: list[Future[None]] = []
+        self._lost = False
+        transport.add_close_callback(self._on_closed)
 
     def write(self, data: bytes) -> None:
         """Send ``data`` now if possible and buffer the rest.
@@ -372,7 +383,9 @@ class StreamWriter:
         Once over, waits until the buffer falls to the low-water mark.
 
         Raises:
-            ConnectionClosedError: If the peer reset the connection.
+            ConnectionClosedError: If the peer reset the connection, or the
+                connection closed (for example by ``abort()``) while
+                buffered bytes were still waiting to be sent.
 
         """
         transport = self._transport
@@ -389,6 +402,8 @@ class StreamWriter:
                 self._drain_waiters.remove(waiter)
         if transport.error is not None:
             raise transport.closed_error()
+        if self._lost:
+            raise ConnectionClosedError(LOST_MESSAGE)
 
     def close(self) -> None:
         """Close once the buffer has been flushed (closes the whole socket)."""
@@ -413,9 +428,7 @@ class StreamWriter:
     def abort(self) -> None:
         """Throw away anything still buffered and close the fd immediately."""
         self._closing = True
-        self._buffer.clear()
         self._transport.close()
-        self._wake_drainers()
 
     def _watch(self) -> None:
         """Ask the loop to tell us when the fd can take more bytes."""
@@ -453,10 +466,20 @@ class StreamWriter:
                 transport.close()
 
     def _fail(self, error: OSError) -> None:
-        """Record a broken connection, drop the buffer and wake drainers."""
-        self._unwatch()
-        self._buffer.clear()
+        """Record a broken connection (``_on_closed`` then tidies up)."""
         self._transport.fail(error)
+
+    def _on_closed(self) -> None:
+        """Drop the buffer and wake drainers, whoever closed the transport.
+
+        The reader may be the one that finds a reset, or ``abort()`` may
+        close mid-drain: either way a pending ``drain()`` must not hang.
+        The transport has already removed the writable watch.
+        """
+        self._watching = False
+        if self._buffer:
+            self._lost = True
+            self._buffer.clear()
         self._wake_drainers()
 
     def _wake_drainers(self) -> None:
