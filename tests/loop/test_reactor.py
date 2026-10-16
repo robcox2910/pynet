@@ -1,0 +1,287 @@
+"""Test the reactor: callbacks, timers, fake clock and error reporting."""
+
+import logging
+
+import pytest
+
+from pynet.loop import ErrorContext, EventLoop
+from pynet.loop.testing import FakeClock
+
+DELAY = 5.0
+SHORT = 1.0
+TWO = 2.0
+THREE = 3.0
+EXPECTED_ZERO = 0.0
+START_TIME = 100.0
+
+
+class TestCallSoon:
+    """Test immediate callbacks."""
+
+    def test_call_soon_runs_in_fifo_order(self) -> None:
+        """Run callbacks in the order they were scheduled."""
+        loop = EventLoop()
+        order: list[str] = []
+        for name in ("a", "b", "c"):
+            loop.call_soon(lambda n=name: order.append(n))
+
+        loop.run_once()
+
+        assert order == ["a", "b", "c"]
+
+    def test_callbacks_added_during_run_wait_for_next_turn(self) -> None:
+        """Run only the callbacks that were ready at the start of the turn."""
+        loop = EventLoop()
+        order: list[str] = []
+
+        def first() -> None:
+            """Schedule a follow-up callback."""
+            order.append("first")
+            loop.call_soon(lambda: order.append("second"))
+
+        loop.call_soon(first)
+        loop.run_once()
+        assert order == ["first"]
+        loop.run_once()
+        assert order == ["first", "second"]
+
+    def test_cancelled_callback_never_runs(self) -> None:
+        """Skip a cancelled handle."""
+        loop = EventLoop()
+        fired: list[str] = []
+        handle = loop.call_soon(lambda: fired.append("x"))
+        handle.cancel()
+
+        loop.run_once()
+
+        assert handle.cancelled()
+        assert fired == []
+
+
+class TestTimers:
+    """Test kitchen timers."""
+
+    def test_call_later_does_not_fire_early(self) -> None:
+        """Fire only once the delay has fully elapsed."""
+        clock = FakeClock()
+        loop = EventLoop(clock=clock)
+        fired: list[str] = []
+        loop.call_later(DELAY, lambda: fired.append("ding"))
+
+        clock.advance(DELAY - SHORT)
+        loop.run_once()
+        assert fired == []
+        clock.advance(SHORT)
+        loop.run_once()
+
+        assert fired == ["ding"]
+
+    def test_timers_fire_in_deadline_order(self) -> None:
+        """Fire timers by deadline regardless of scheduling order."""
+        clock = FakeClock()
+        loop = EventLoop(clock=clock)
+        fired: list[float] = []
+        for delay in (THREE, SHORT, TWO):
+            loop.call_later(delay, lambda d=delay: fired.append(d))
+
+        clock.advance(THREE)
+        loop.run_once()
+
+        assert fired == [SHORT, TWO, THREE]
+
+    def test_equal_deadlines_fire_in_schedule_order(self) -> None:
+        """Break ties by scheduling sequence."""
+        clock = FakeClock()
+        loop = EventLoop(clock=clock)
+        fired: list[str] = []
+        loop.call_at(SHORT, lambda: fired.append("a"))
+        loop.call_at(SHORT, lambda: fired.append("b"))
+
+        clock.advance(SHORT)
+        loop.run_once()
+
+        assert fired == ["a", "b"]
+
+    def test_cancelled_timer_never_fires(self) -> None:
+        """Skip a cancelled timer."""
+        clock = FakeClock()
+        loop = EventLoop(clock=clock)
+        fired: list[str] = []
+        handle = loop.call_later(SHORT, lambda: fired.append("x"))
+        handle.cancel()
+
+        clock.advance(DELAY)
+        loop.run_once()
+
+        assert fired == []
+
+    def test_call_at_uses_absolute_time(self) -> None:
+        """Expose the deadline as ``when`` and use the loop clock."""
+        clock = FakeClock(START_TIME)
+        loop = EventLoop(clock=clock)
+
+        handle = loop.call_later(DELAY, lambda: None)
+
+        assert handle.when == START_TIME + DELAY
+        assert loop.time() == START_TIME
+
+    def test_run_once_does_not_sleep_when_timer_due(self) -> None:
+        """Return immediately with a fake clock when a timer is already due."""
+        clock = FakeClock()
+        loop = EventLoop(clock=clock)
+        fired: list[str] = []
+        loop.call_later(DELAY, lambda: fired.append("x"))
+        clock.advance(DELAY)
+
+        loop.run_once()
+
+        assert fired == ["x"]
+
+
+class TestNextTimeout:
+    """Test the no-spinning timeout rules."""
+
+    def test_next_timeout_none_when_idle(self) -> None:
+        """Wait forever when nothing is scheduled."""
+        assert EventLoop().next_timeout() is None
+
+    def test_next_timeout_zero_when_ready(self) -> None:
+        """Do not wait when callbacks are ready."""
+        loop = EventLoop()
+        loop.call_soon(lambda: None)
+
+        assert loop.next_timeout() == EXPECTED_ZERO
+
+    def test_next_timeout_counts_down_to_timer(self) -> None:
+        """Wait exactly until the earliest timer."""
+        clock = FakeClock()
+        loop = EventLoop(clock=clock)
+        loop.call_later(DELAY, lambda: None)
+        assert loop.next_timeout() == DELAY
+
+        clock.advance(SHORT)
+
+        assert loop.next_timeout() == DELAY - SHORT
+
+    def test_next_timeout_never_negative(self) -> None:
+        """Clamp an overdue timer to zero."""
+        clock = FakeClock()
+        loop = EventLoop(clock=clock)
+        loop.call_later(SHORT, lambda: None)
+        clock.advance(DELAY)
+
+        assert loop.next_timeout() == EXPECTED_ZERO
+
+    def test_next_timeout_ignores_cancelled_timers(self) -> None:
+        """Skip cancelled timers at the head of the heap."""
+        clock = FakeClock()
+        loop = EventLoop(clock=clock)
+        loop.call_later(SHORT, lambda: None).cancel()
+        assert loop.next_timeout() is None
+
+        loop.call_later(DELAY, lambda: None)
+
+        assert loop.next_timeout() == DELAY
+
+
+class TestErrors:
+    """Test error reporting."""
+
+    def test_callback_exception_reported_and_loop_continues(self) -> None:
+        """Report a failing callback and still run the next one."""
+        loop = EventLoop()
+        seen: list[ErrorContext] = []
+        fired: list[str] = []
+        loop.set_exception_handler(seen.append)
+        loop.call_soon(lambda: 1 / 0)
+        loop.call_soon(lambda: fired.append("next"))
+
+        loop.run_once()
+
+        assert len(seen) == 1
+        assert isinstance(seen[0].exception, ZeroDivisionError)
+        assert fired == ["next"]
+
+    def test_default_handler_logs(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Log reported errors on ``pynet.loop`` at ERROR."""
+        loop = EventLoop()
+        loop.call_soon(lambda: 1 / 0)
+
+        with caplog.at_level(logging.ERROR, logger="pynet.loop"):
+            loop.run_once()
+
+        records = [r for r in caplog.records if r.name == "pynet.loop"]
+        assert len(records) == 1
+        assert records[0].levelno == logging.ERROR
+        assert records[0].exc_info is not None
+
+    def test_clearing_handler_restores_logging(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Fall back to logging after the handler is set to None."""
+        loop = EventLoop()
+        loop.set_exception_handler(lambda _ctx: None)
+        loop.set_exception_handler(None)
+
+        with caplog.at_level(logging.ERROR, logger="pynet.loop"):
+            loop.report_error(ErrorContext("boom"))
+
+        assert [r.getMessage() for r in caplog.records] == ["boom"]
+
+
+class TestLifecycle:
+    """Test run_forever, stop and close."""
+
+    def test_stop_ends_run_forever(self) -> None:
+        """Return from run_forever after stop is called."""
+        loop = EventLoop()
+        states: list[bool] = []
+
+        def finish() -> None:
+            """Record running state and stop."""
+            states.append(loop.is_running())
+            loop.stop()
+
+        loop.call_soon(finish)
+        loop.run_forever()
+
+        assert states == [True]
+        assert not loop.is_running()
+
+    def test_run_forever_fires_real_timer(self) -> None:
+        """Block in select until a real short timer fires."""
+        loop = EventLoop()
+        loop.call_later(0.01, loop.stop)
+
+        loop.run_forever()
+
+        assert not loop.is_running()
+
+    def test_run_forever_returns_when_nothing_to_do(self) -> None:
+        """Return rather than hang when nothing is scheduled or registered."""
+        EventLoop().run_forever()
+
+    def test_call_on_closed_loop_raises(self) -> None:
+        """Refuse scheduling on a closed loop."""
+        loop = EventLoop()
+        loop.close()
+        loop.close()
+
+        assert loop.is_closed()
+        with pytest.raises(RuntimeError):
+            loop.call_soon(lambda: None)
+        with pytest.raises(RuntimeError):
+            loop.call_later(SHORT, lambda: None)
+        with pytest.raises(RuntimeError):
+            loop.run_forever()
+
+
+class TestFakeClock:
+    """Test the hand-wound clock."""
+
+    def test_advance_moves_time(self) -> None:
+        """Start at the given time and move only when advanced."""
+        clock = FakeClock(START_TIME)
+        assert clock() == START_TIME
+
+        clock.advance(SHORT)
+
+        assert clock() == START_TIME + SHORT

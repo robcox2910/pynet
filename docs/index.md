@@ -60,6 +60,7 @@ and Python's `requests` library do under the hood.
 | **Ping (ICMP)** | Knocking on the door | Check if a host is reachable and measure RTT |
 | **Base64** | Encoding photos for email | Convert binary data to safe ASCII text |
 | **TLS** | Secret handshake | Negotiate encrypted connections with cipher suites |
+| **[Event Loop](concepts/event-loop.md)** | The waiter | Run callbacks and timers in one thread without spinning |
 
 ## Let's Start!
 
