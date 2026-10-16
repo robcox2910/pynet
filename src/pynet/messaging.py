@@ -100,10 +100,11 @@ def encode_message(msg: Message) -> list[bytes]:
         envelope["attachments"] = len(msg.attachments)
     try:
         text = json.dumps(envelope, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
-    except (TypeError, ValueError) as error:
+        payload = text.encode("utf-8")
+    except (TypeError, ValueError, RecursionError) as error:
         message = f"cannot encode envelope: {error}"
         raise ProtocolError(message) from error
-    return [KIND_JSON + text.encode("utf-8"), *(KIND_BINARY + data for data in msg.attachments)]
+    return [KIND_JSON + payload, *(KIND_BINARY + data for data in msg.attachments)]
 
 
 def _reject_constant(name: str) -> JsonValue:
@@ -185,7 +186,7 @@ class MessageDecoder:
         """Validate a JSON envelope; return an attachment-less message and the count owed."""
         try:
             data: JsonValue = json.loads(raw.decode("utf-8"), parse_constant=_reject_constant)
-        except ValueError as error:
+        except (ValueError, RecursionError) as error:
             message = f"invalid JSON envelope: {error}"
             raise ProtocolError(message) from error
         if not isinstance(data, dict):

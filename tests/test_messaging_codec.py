@@ -25,7 +25,16 @@ BLOB_TWO = b"second attachment"
 TWO_ATTACHMENTS = 2
 BAD_VERSION = 99
 NEGATIVE_COUNT = -1
+NESTING_DEPTH = 100_000
 UNICODE_TEXT = "café ☃"
+
+
+def deeply_nested() -> JsonValue:
+    """Return a list nested far deeper than the recursion limit."""
+    value: JsonValue = []
+    for _ in range(NESTING_DEPTH):
+        value = [value]
+    return value
 
 
 def envelope_of(frames: list[bytes]) -> dict[str, object]:
@@ -140,6 +149,20 @@ class TestEnvelopeShape:
         with pytest.raises(ProtocolError):
             encode_message(Message(MessageType.PUSH, method=METHOD, body={1, 2}))  # type: ignore[arg-type]  # pyright: ignore[reportArgumentType]
 
+    @pytest.mark.parametrize(
+        "message",
+        [
+            Message(MessageType.PUSH, method=METHOD, body="\ud800"),
+            Message(MessageType.PUSH, method="\ud800"),
+            Message(MessageType.PUSH, method=METHOD, body=deeply_nested()),
+        ],
+        ids=["surrogate-body", "surrogate-method", "deeply-nested"],
+    )
+    def test_unencodable_message_refused(self, message: Message) -> None:
+        """Raise ProtocolError, never a raw encoding or recursion error."""
+        with pytest.raises(ProtocolError):
+            encode_message(message)
+
 
 class TestRoundTrip:
     """Test encode then decode."""
@@ -229,6 +252,14 @@ class TestProtocolErrors:
         """Raise ProtocolError for each malformed frame."""
         with pytest.raises(ProtocolError):
             MessageDecoder().feed(frame)
+
+    def test_deeply_nested_json_refused_and_decoder_reusable(self) -> None:
+        """Turn a recursion bomb into ProtocolError and keep decoding."""
+        decoder = MessageDecoder()
+        with pytest.raises(ProtocolError):
+            decoder.feed(KIND_JSON + b"[" * NESTING_DEPTH)
+        ping = Message(MessageType.PING)
+        assert decoder.feed(encode_message(ping)[0]) == ping
 
     def test_unsupported_version_message(self) -> None:
         """Name the problem unsupported_version."""
