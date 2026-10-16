@@ -145,15 +145,18 @@ def _request(
         msg = f"Connection to {parsed.host}:{parsed.port} failed: {exc}"
         raise NetConnectionError(msg) from exc
 
-    raw_response = b"".join(chunks).decode("utf-8", errors="replace")
-    return _parse_response(raw_response)
+    return _parse_response(b"".join(chunks))
 
 
-def _parse_response(raw: str) -> Response:
-    """Parse a raw HTTP response string.
+def _parse_response(raw: bytes) -> Response:
+    """Parse a raw HTTP response, byte by byte.
+
+    We work with **bytes**, not text, because the sizes in a response --
+    ``Content-Length`` and the chunk sizes below -- count bytes. An emoji is
+    one letter but four bytes, so counting letters would cut the body short.
 
     Args:
-        raw: The raw HTTP response text.
+        raw: The raw HTTP response bytes, exactly as they arrived.
 
     Returns:
         A parsed Response object.
@@ -166,27 +169,12 @@ def _parse_response(raw: str) -> Response:
         msg = "Empty response"
         raise HTTPError(msg)
 
-    # Split headers from body.
-    if "\r\n\r\n" in raw:
-        header_section, body = raw.split("\r\n\r\n", maxsplit=1)
-        lines = header_section.split("\r\n")
-    else:
-        parts = raw.split("\n\n", maxsplit=1)
-        header_section = parts[0]
-        body = parts[1] if len(parts) > 1 else ""
-        lines = header_section.split("\n")
+    # Split headers from body (servers should use CRLF, but some send LF).
+    separator = b"\r\n\r\n" if b"\r\n\r\n" in raw else b"\n\n"
+    head, _, body = raw.partition(separator)
+    lines = head.decode("latin-1").replace("\r\n", "\n").split("\n")
 
-    # Parse status line.
-    if not lines:
-        msg = "Missing status line"
-        raise HTTPError(msg)
-
-    status_parts = lines[0].split(maxsplit=2)
-    min_status_parts = 2
-    if len(status_parts) < min_status_parts:
-        msg = f"Malformed status line: {lines[0]!r}"
-        raise HTTPError(msg)
-    status = int(status_parts[1])
+    status = _parse_status_line(lines[0])
 
     # Parse headers.
     headers: dict[str, str] = {}
@@ -195,4 +183,77 @@ def _parse_response(raw: str) -> Response:
             key, value = line.split(":", maxsplit=1)
             headers[key.strip()] = value.strip()
 
-    return Response(status=status, headers=headers, body=body)
+    if _header(headers, "Transfer-Encoding").lower() == "chunked":
+        body = _decode_chunked(body)
+    elif content_length := _header(headers, "Content-Length"):
+        body = _take_content_length(body, content_length)
+
+    return Response(status=status, headers=headers, body=body.decode("utf-8", errors="replace"))
+
+
+def _parse_status_line(line: str) -> int:
+    """Read the status code from a line like ``HTTP/1.1 200 OK``."""
+    parts = line.split(maxsplit=2)
+    min_status_parts = 2
+    if len(parts) < min_status_parts:
+        msg = f"Malformed status line: {line!r}"
+        raise HTTPError(msg)
+    try:
+        return int(parts[1])
+    except ValueError:
+        msg = f"Malformed status code in status line: {line!r}"
+        raise HTTPError(msg) from None
+
+
+def _header(headers: dict[str, str], name: str) -> str:
+    """Look up a header, ignoring capital letters (``content-length`` == ``Content-Length``)."""
+    wanted = name.lower()
+    return next((value for key, value in headers.items() if key.lower() == wanted), "")
+
+
+def _take_content_length(body: bytes, content_length: str) -> bytes:
+    """Keep exactly the number of body bytes the server promised."""
+    try:
+        length = int(content_length)
+    except ValueError:
+        msg = f"Bad Content-Length: {content_length!r}"
+        raise HTTPError(msg) from None
+    if len(body) < length:
+        msg = f"Response ended early: expected {length} body bytes, got {len(body)}"
+        raise HTTPError(msg)
+    return body[:length]
+
+
+def _decode_chunked(body: bytes) -> bytes:
+    r"""Reassemble a ``Transfer-Encoding: chunked`` body.
+
+    Instead of saying the total size up front, the server sends the body in
+    pieces, each labelled with its size in hexadecimal, ending with a
+    zero-size piece -- like a delivery of numbered parcels where the last box
+    is empty to say "that's everything"::
+
+        5\r\nhello\r\n   <- 5 bytes
+        0\r\n\r\n        <- the end
+    """
+    result = bytearray()
+    position = 0
+    while True:
+        line_end = body.find(b"\r\n", position)
+        if line_end == -1:
+            msg = "Chunked response ended before the final chunk"
+            raise HTTPError(msg)
+        size_text = body[position:line_end].split(b";", 1)[0].strip()
+        try:
+            size = int(size_text, 16)
+        except ValueError:
+            msg = f"Bad chunk size: {size_text!r}"
+            raise HTTPError(msg) from None
+        if size == 0:
+            return bytes(result)
+        start = line_end + 2
+        chunk = body[start : start + size]
+        if len(chunk) < size:
+            msg = "Chunked response ended in the middle of a chunk"
+            raise HTTPError(msg)
+        result.extend(chunk)
+        position = start + size + 2  # skip the chunk and its trailing CRLF
