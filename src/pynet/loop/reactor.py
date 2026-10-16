@@ -169,12 +169,12 @@ class EventLoop:
         Appends under a lock, then rings the doorbell (one byte on the
         wakeup socket). A full pipe means the loop is already awake.
         """
-        self._check_open()
         handle = Handle(callback)
         with self._ready_lock:
+            self._check_open()
             self._ready.append(handle)
-        with contextlib.suppress(BlockingIOError):
-            self._wakeup_write.send(WAKEUP_BYTE)
+            with contextlib.suppress(BlockingIOError):
+                self._wakeup_write.send(WAKEUP_BYTE)
         return handle
 
     def add_reader(self, fd: int, callback: Callback) -> None:
@@ -301,15 +301,18 @@ class EventLoop:
         """Close the loop and its selector; scheduling afterwards raises."""
         if self._closed:
             return
-        self._closed = True
-        self._ready.clear()
-        self._timers.clear()
-        self._selector.unregister(self._wakeup_read)
-        self._wakeup_read.close()
-        self._wakeup_write.close()
-        self._selector.close()
-        # The loop is already marked closed, so a worker finishing during the
-        # join cannot deliver (its call_soon_threadsafe raises and is dropped).
+        # Mark closed and close the doorbell under the same lock that
+        # call_soon_threadsafe holds, so a worker either finishes its call
+        # before the close or gets a clean RuntimeError -- never a dead socket.
+        with self._ready_lock:
+            self._closed = True
+            self._ready.clear()
+            self._timers.clear()
+            self._selector.unregister(self._wakeup_read)
+            self._wakeup_read.close()
+            self._wakeup_write.close()
+            self._selector.close()
+        # Join the workers outside the lock: they call call_soon_threadsafe.
         if self._worker_pool is not None:
             self._worker_pool.shutdown(wait=True)
 

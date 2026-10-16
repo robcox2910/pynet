@@ -1,5 +1,6 @@
 """Test the worker pool and run_in_thread."""
 
+import contextlib
 import threading
 import time
 
@@ -17,6 +18,7 @@ BLOCK_SECONDS = 0.2
 POOL_SIZE = 2
 JOBS = 6
 ADDEND = 3
+RACE_ROUNDS = 200
 
 
 class BoomError(Exception):
@@ -210,3 +212,32 @@ class TestStopIteration:
 
         with pytest.raises(RuntimeError):
             run(main())
+
+
+class TestCloseRace:
+    """Test workers finishing while the loop closes."""
+
+    def test_close_while_workers_deliver(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Close the loop amid finishing workers without logging or hanging."""
+        for _ in range(RACE_ROUNDS):
+            loop = EventLoop()
+            pool = loop.worker_pool()
+            start = threading.Event()
+
+            def job(start: threading.Event = start) -> int:
+                """Wait for the starting gun."""
+                start.wait()
+                return 1
+
+            def on_done(
+                _value: int | None, _error: BaseException | None, loop: EventLoop = loop
+            ) -> None:
+                """Deliver to the loop, dropping it if closed."""
+                with contextlib.suppress(RuntimeError):
+                    loop.call_soon_threadsafe(int)
+
+            for _ in range(POOL_SIZE * 2):
+                pool.submit(job, on_done)
+            start.set()
+            loop.close()
+        assert not caplog.records
