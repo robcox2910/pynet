@@ -32,21 +32,28 @@ message protocol built on top of PyNet.
 
 ```python
 from pynet.framing import FramedConnection
-from pynet.loop import run
+from pynet.loop import Event, run
 from pynet.streams import open_connection, start_server
 
 
 async def main() -> None:
+    done = Event()
+
     async def handler(reader, writer):
         conn = FramedConnection(reader, writer)
         print("got", await conn.recv_frame())
         conn.close()
+        done.set()
 
     server = await start_server(handler, "127.0.0.1", 0)
     reader, writer = await open_connection("127.0.0.1", server.port)
     conn = FramedConnection(reader, writer)
     await conn.send_frame(b"hello")
+    await done.wait()
+    conn.close()
     await conn.wait_closed()
+    server.close()
+    await server.wait_closed()
 
 
 run(main())

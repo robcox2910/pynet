@@ -23,6 +23,7 @@ SPLIT_AT = 2
 BODY = b"hello world"
 PARTIAL_BODY = b"hel"
 LENGTH_FORMAT = ">I"
+CLEAN_MESSAGE = "peer closed"
 
 
 async def connected_pair(
@@ -206,7 +207,7 @@ class TestFramedConnection:
             return str(info.value)
 
         messages = run(clean())
-        assert all("peer closed" in m for m in messages)
+        assert messages == [CLEAN_MESSAGE, CLEAN_MESSAGE]
         assert "mid-frame" in run(mid_frame())
 
     def test_mid_header_eof(self) -> None:
