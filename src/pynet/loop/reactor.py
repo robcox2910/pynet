@@ -21,6 +21,7 @@ import time
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Protocol
 
 type Callback = Callable[[], object]
 
@@ -30,6 +31,20 @@ _thread_state = threading.local()
 
 WAKEUP_BYTE = b"x"
 DRAIN_SIZE = 4096
+
+
+class WorkerPoolLike(Protocol):
+    """Describe the pool the loop owns (see ``pynet.loop.threads.WorkerPool``)."""
+
+    def submit[T](
+        self, fn: Callable[[], T], on_done: Callable[[T | None, BaseException | None], None]
+    ) -> None:
+        """Queue ``fn`` and report its outcome through ``on_done``."""
+        ...
+
+    def shutdown(self, *, wait: bool = True) -> None:
+        """Stop the pool, optionally waiting for its threads."""
+        ...
 
 
 class FdWatch:
@@ -131,6 +146,7 @@ class EventLoop:
         self._selector.register(self._wakeup_read, selectors.EVENT_READ, None)
         self._tasks: set[object] = set()
         self._current_task: object | None = None
+        self._worker_pool: WorkerPoolLike | None = None
 
     def time(self) -> float:
         """Return the loop's current time in seconds."""
@@ -292,6 +308,18 @@ class EventLoop:
         self._wakeup_read.close()
         self._wakeup_write.close()
         self._selector.close()
+        # The loop is already marked closed, so a worker finishing during the
+        # join cannot deliver (its call_soon_threadsafe raises and is dropped).
+        if self._worker_pool is not None:
+            self._worker_pool.shutdown(wait=True)
+
+    def worker_pool(self) -> WorkerPoolLike:
+        """Return this loop's helper-thread pool, creating it on first use."""
+        if self._worker_pool is None:
+            from pynet.loop.threads import WorkerPool  # noqa: PLC0415 -- threads imports the loop
+
+            self._worker_pool = WorkerPool()
+        return self._worker_pool
 
     def is_closed(self) -> bool:
         """Return whether the loop has been closed."""

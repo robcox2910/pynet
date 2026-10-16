@@ -81,5 +81,6 @@ run(main())
 
 ## Next Up
 
-Back to the [Event Loop](event-loop.md) overview, or revisit
+Send slow, blocking work to helpers with [Worker Threads](threads.md), or
+revisit the [Event Loop](event-loop.md) overview and
 [Cancellation and Timeouts](cancellation-and-timeouts.md).

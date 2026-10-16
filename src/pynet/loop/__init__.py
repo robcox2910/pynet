@@ -12,6 +12,7 @@ from pynet.loop.futures import Cancelled, Future, InvalidStateError
 from pynet.loop.reactor import ErrorContext, EventLoop, Handle, TimerHandle
 from pynet.loop.sync import Event, Lock, Queue, Semaphore
 from pynet.loop.tasks import Task, current_task, get_running_loop, run, sleep, spawn
+from pynet.loop.threads import WorkerPool, run_in_thread
 
 __all__ = [
     "Cancelled",
@@ -29,10 +30,12 @@ __all__ = [
     "Task",
     "Timeout",
     "TimerHandle",
+    "WorkerPool",
     "current_task",
     "gather",
     "get_running_loop",
     "run",
+    "run_in_thread",
     "sleep",
     "spawn",
     "timeout",
