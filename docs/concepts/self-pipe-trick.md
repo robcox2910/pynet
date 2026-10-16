@@ -62,4 +62,4 @@ an idle loop sleeps in `select` instead of spinning.
 ## Next Up
 
 Now the loop can hear the outside world. Next we give it
-promises to wait on: see [Event Loop](event-loop.md).
+promises to wait on: see [Tasks and Await](tasks-and-await.md).

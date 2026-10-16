@@ -61,6 +61,7 @@ and Python's `requests` library do under the hood.
 | **Base64** | Encoding photos for email | Convert binary data to safe ASCII text |
 | **TLS** | Secret handshake | Negotiate encrypted connections with cipher suites |
 | **[Event Loop](concepts/event-loop.md)** | The waiter | Run callbacks and timers in one thread without spinning |
+| **[Tasks and Await](concepts/tasks-and-await.md)** | Bookmarks in recipes | Pause one coroutine, run another, resume exactly where it left off |
 
 ## Let's Start!
 

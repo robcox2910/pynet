@@ -26,6 +26,8 @@ type Callback = Callable[[], object]
 
 logger = logging.getLogger("pynet.loop")
 
+_thread_state = threading.local()
+
 WAKEUP_BYTE = b"x"
 DRAIN_SIZE = 4096
 
@@ -88,6 +90,12 @@ class TimerHandle(Handle):
     def __lt__(self, other: TimerHandle) -> bool:
         """Order by ``(when, sequence)`` for the heap."""
         return (self.when, self._sequence) < (other.when, other._sequence)
+
+
+def running_loop() -> EventLoop | None:
+    """Return the loop running a turn in this thread, or None."""
+    loop: EventLoop | None = getattr(_thread_state, "loop", None)
+    return loop
 
 
 @dataclass(frozen=True)
@@ -197,7 +205,26 @@ class EventLoop:
         ``FakeClock``) never makes the loop really sleep: it only polls.
         With an autojump clock, a turn that saw no I/O and has a pending
         timer winds the clock forward to it.
+
+        While the turn runs, this loop is the thread's running loop (see
+        ``running_loop``), so ``get_running_loop`` works inside callbacks.
+
+        Raises:
+            RuntimeError: If a different loop is mid-turn in this thread.
+
         """
+        previous = running_loop()
+        if previous is not None and previous is not self:
+            message = "Cannot run a loop while another loop is running in this thread"
+            raise RuntimeError(message)
+        _thread_state.loop = self
+        try:
+            self._turn()
+        finally:
+            _thread_state.loop = previous
+
+    def _turn(self) -> None:
+        """Do the work of one turn (see ``run_once``)."""
         timeout = self.next_timeout()
         virtual = bool(getattr(self._clock, "virtual", False))
         if virtual:
