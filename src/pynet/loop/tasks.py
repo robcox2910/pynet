@@ -14,9 +14,8 @@ away any tasks still running, and closes the loop.
 
 import inspect
 import itertools
-import weakref
-from collections.abc import Callable, Coroutine
-from typing import Any
+from collections.abc import Callable, Coroutine, Sequence
+from typing import Any, cast
 
 from pynet.loop.futures import Cancelled, Future
 from pynet.loop.reactor import ErrorContext, EventLoop, running_loop
@@ -24,8 +23,6 @@ from pynet.loop.reactor import ErrorContext, EventLoop, running_loop
 SHUTDOWN_MESSAGE = "Unhandled exception in a task cancelled by run() shutdown"
 
 _task_ids = itertools.count(1)
-_current_tasks: dict[EventLoop, Task[Any]] = {}
-_pending_tasks: weakref.WeakKeyDictionary[EventLoop, set[Task[Any]]] = weakref.WeakKeyDictionary()
 
 
 class Task[T](Future[T]):
@@ -57,7 +54,7 @@ class Task[T](Future[T]):
         self._must_cancel = False
         self._num_cancels = 0
         loop.call_soon(self._step)
-        _pending_tasks.setdefault(loop, set()).add(self)
+        loop.add_task(self)
 
     def get_name(self) -> str:
         """Return the task's name."""
@@ -120,7 +117,7 @@ class Task[T](Future[T]):
             self._must_cancel = False
         self._waiting_on = None
         loop = self.get_loop()
-        _current_tasks[loop] = self  # steps never nest: callbacks are never inline
+        loop.enter_task(self)  # steps never nest: callbacks are never inline
         try:
             yielded = self._coro.send(None) if exc is None else self._coro.throw(exc)
         except StopIteration as stop:
@@ -142,7 +139,7 @@ class Task[T](Future[T]):
         else:
             self._handle_yield(yielded)
         finally:
-            del _current_tasks[loop]
+            loop.leave_task()
 
     def _handle_yield(self, yielded: object) -> None:
         """Wait on a yielded future, or throw a helpful error back in."""
@@ -157,7 +154,7 @@ class Task[T](Future[T]):
         elif yielded is self:
             error = RuntimeError("A task cannot await itself")
         else:
-            future: Future[Any] = yielded  # pyright: ignore[reportUnknownVariableType]
+            future = cast("Future[Any]", yielded)
             if future.get_loop() is not loop:
                 error = RuntimeError("Cannot await a Future that belongs to a different loop")
             else:
@@ -179,7 +176,7 @@ class Task[T](Future[T]):
 
     def _forget(self) -> None:
         """Remove the task from its loop's pending set."""
-        _pending_tasks[self.get_loop()].discard(self)
+        self.get_loop().discard_task(self)
 
 
 def get_running_loop() -> EventLoop:
@@ -201,7 +198,7 @@ def current_task() -> Task[Any] | None:
     loop = running_loop()
     if loop is None:
         return None
-    return _current_tasks.get(loop)
+    return cast("Task[Any] | None", loop.running_task())
 
 
 def spawn[T](coro: Coroutine[Any, Any, T], *, name: str | None = None) -> Task[T]:
@@ -234,8 +231,9 @@ async def sleep(seconds: float) -> None:
 def run[T](main: Coroutine[Any, Any, T], *, clock: Callable[[], float] | None = None) -> T:
     """Run ``main`` on a brand-new loop and return its result.
 
-    When ``main`` finishes, any tasks still running are cancelled and given
-    the chance to clean up, then the loop is closed.
+    When ``main`` finishes -- or a ``KeyboardInterrupt``/``SystemExit``
+    escapes it -- any tasks still running are cancelled and given the
+    chance to clean up, then the loop is closed.
 
     Args:
         main: The coroutine to run.
@@ -252,14 +250,18 @@ def run[T](main: Coroutine[Any, Any, T], *, clock: Callable[[], float] | None = 
     loop = EventLoop() if clock is None else EventLoop(clock=clock)
     try:
         task = Task(main, loop)
-        _run_until_done(loop, [task])
-        _cancel_leftovers(loop)
+        try:
+            _run_until_done(loop, [task])
+        finally:
+            # Runs even if KeyboardInterrupt/SystemExit escaped the loop, so
+            # leftover tasks still get their ``finally`` blocks.
+            _cancel_leftovers(loop)
         return task.result()
     finally:
         loop.close()
 
 
-def _run_until_done(loop: EventLoop, futures: list[Future[Any]]) -> None:
+def _run_until_done(loop: EventLoop, futures: Sequence[Future[Any]]) -> None:
     """Run ``loop`` until every future in ``futures`` is done."""
     waiting = [future for future in futures if not future.done()]
 
@@ -276,7 +278,7 @@ def _run_until_done(loop: EventLoop, futures: list[Future[Any]]) -> None:
 
 def _cancel_leftovers(loop: EventLoop) -> None:
     """Cancel tasks still pending on ``loop`` and wait for them to finish."""
-    leftovers: list[Future[Any]] = list(_pending_tasks.get(loop, set()))
+    leftovers = [cast("Task[Any]", task) for task in loop.pending_tasks()]
     for task in leftovers:
         task.cancel()
     _run_until_done(loop, leftovers)

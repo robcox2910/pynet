@@ -129,6 +129,8 @@ class EventLoop:
         self._wakeup_read.setblocking(False)
         self._wakeup_write.setblocking(False)
         self._selector.register(self._wakeup_read, selectors.EVENT_READ, None)
+        self._tasks: set[object] = set()
+        self._current_task: object | None = None
 
     def time(self) -> float:
         """Return the loop's current time in seconds."""
@@ -242,9 +244,17 @@ class EventLoop:
         with self._ready_lock:
             batch = list(self._ready)
             self._ready.clear()
-        for handle in batch:
-            if not handle.cancelled():
+        for index, handle in enumerate(batch):
+            if handle.cancelled():
+                continue
+            try:
                 self._run_handle(handle)
+            except BaseException:
+                # KeyboardInterrupt/SystemExit escape the turn; keep the rest
+                # of the batch so a later turn (e.g. shutdown) still runs it.
+                with self._ready_lock:
+                    self._ready.extendleft(reversed(batch[index + 1 :]))
+                raise
 
     def run_forever(self) -> None:
         """Run turns until ``stop`` is called.
@@ -297,6 +307,34 @@ class EventLoop:
             logger.error(ctx.message, exc_info=ctx.exception)
         else:
             self._exception_handler(ctx)
+
+    # The task registry. ``pynet.loop.tasks`` keeps its bookkeeping here so
+    # every loop (and so every thread) has its own; everyday code should
+    # use ``current_task()`` and ``spawn()`` instead of these.
+
+    def add_task(self, task: object) -> None:
+        """Record ``task`` as pending on this loop (used by ``Task``)."""
+        self._tasks.add(task)
+
+    def discard_task(self, task: object) -> None:
+        """Forget ``task`` once it has finished (used by ``Task``)."""
+        self._tasks.discard(task)
+
+    def pending_tasks(self) -> list[object]:
+        """Return the tasks still pending on this loop (used by ``run``)."""
+        return list(self._tasks)
+
+    def enter_task(self, task: object) -> None:
+        """Mark ``task`` as the one whose coroutine is running now."""
+        self._current_task = task
+
+    def leave_task(self) -> None:
+        """Mark that no task's coroutine is running now."""
+        self._current_task = None
+
+    def running_task(self) -> object | None:
+        """Return the task whose coroutine is running now, or None."""
+        return self._current_task
 
     def _check_open(self) -> None:
         """Raise RuntimeError if the loop is closed."""

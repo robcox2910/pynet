@@ -2,6 +2,7 @@
 
 import contextlib
 import gc
+import threading
 import time
 from collections.abc import Generator
 from typing import Any
@@ -35,6 +36,7 @@ TWO = 2
 NO_CANCELS = 0
 TASK_NAME = "worker"
 CANCEL_MESSAGE = "stop now"
+STEPS = 200
 
 
 class BoomError(Exception):
@@ -680,6 +682,82 @@ class TestTask:
 
         with pytest.raises(KeyboardInterrupt):
             run(interrupted())
+
+    def test_keyboard_interrupt_still_cancels_leftovers(self) -> None:
+        """Cancel and clean up leftover tasks even when main is interrupted."""
+        cleaned: list[str] = []
+
+        async def straggler() -> None:
+            """Sleep for ages, recording cleanup when cancelled."""
+            try:
+                await sleep(LONG_SLEEP)
+            finally:
+                cleaned.append("done")
+
+        async def main() -> None:
+            """Spawn a straggler, let it start, then get interrupted."""
+            spawn(straggler())
+            await sleep(0)
+            raise KeyboardInterrupt
+
+        with pytest.raises(KeyboardInterrupt):
+            run(main())
+
+        assert cleaned == ["done"]
+
+    def test_interrupt_does_not_drop_the_rest_of_a_turn(self) -> None:
+        """Keep callbacks queued behind an interrupt so leftovers can be cancelled."""
+        bystanders: list[Task[None]] = []
+
+        async def interrupter() -> None:
+            """Raise ``KeyboardInterrupt`` on the first step."""
+            raise KeyboardInterrupt
+
+        async def bystander() -> None:
+            """Sleep for ages."""
+            await sleep(LONG_SLEEP)
+
+        async def main() -> None:
+            """Start both tasks so their first steps share one loop turn."""
+            spawn(interrupter())
+            bystanders.append(spawn(bystander()))
+            await sleep(LONG_SLEEP)
+
+        with pytest.raises(KeyboardInterrupt):
+            run(main(), clock=FakeClock(autojump=True))
+
+        assert bystanders[0].cancelled()
+
+    def test_registry_is_per_loop(self) -> None:
+        """Track the current task separately for loops running in two threads."""
+        barrier = threading.Barrier(TWO)
+        mismatches: list[str] = []
+        finished: list[int] = []
+
+        async def worker() -> None:
+            """Check, across many pauses, that the current task is this task."""
+            me = current_task()
+            for _ in range(STEPS):
+                await sleep(0)
+                if current_task() is not me:
+                    mismatches.append("wrong task")
+
+        async def main() -> None:
+            """Wait for the other thread's loop, then run workers side by side."""
+            barrier.wait()
+            tasks = [spawn(worker()) for _ in range(TWO)]
+            for task in tasks:
+                await task
+            finished.append(ONE)
+
+        threads = [threading.Thread(target=run, args=(main(),)) for _ in range(TWO)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        assert mismatches == []
+        assert len(finished) == TWO
 
     def test_other_loop_cannot_run_inside_a_turn(self) -> None:
         """Refuse to run a second loop's turn from inside the first loop's turn."""
