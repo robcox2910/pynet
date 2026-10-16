@@ -47,8 +47,9 @@ one -- so you check each room you are responsible for.
   three helpers start at once, none of them grabs another's pipe by
   accident (which would stop that pipe ever reaching EOF).
 - **We never call `Popen.wait()` or `Popen.poll()`.** The watcher reaps
-  the child and we set `popen.returncode` ourselves, so the `Popen`
-  object stays quiet when it is thrown away.
+  the child and we set `popen.returncode` ourselves -- at the very moment
+  of reaping, not later on the loop, so it is recorded even if the loop
+  closes first -- and the `Popen` object stays quiet when it is thrown away.
 - **Only our children.** The watcher calls `waitpid(pid, WNOHANG)` for
   each pid it tracks, never `waitpid(-1)`, so a `subprocess.run()`
   elsewhere in your program still gets to wait for its own child.

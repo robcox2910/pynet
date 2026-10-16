@@ -53,10 +53,11 @@ NOT_INSTALLED_MESSAGE = (
     "the child watcher is not installed: call get_child_watcher().install() "
     "from the main thread (pynet.loop.run() does this when it runs there)"
 )
-EXIT_CALLBACK_ERROR_MESSAGE = "Exception in a child exit callback after its loop closed"
+REAPED_CALLBACK_ERROR_MESSAGE = "Exception in a child's on_reaped callback"
 MAIN_THREAD_MESSAGE = "the child watcher can only be installed from the main thread"
 
 type ExitCallback = Callable[[int], None]
+type _Entry = tuple[EventLoop, ExitCallback, ExitCallback | None]
 type _SignalHandler = Callable[[int, FrameType | None], object] | int | signal.Handlers | None
 
 
@@ -69,7 +70,7 @@ class ChildWatcher:
     def __init__(self) -> None:
         """Start uninstalled, tracking nobody."""
         self._lock = threading.Lock()
-        self._children: dict[int, tuple[EventLoop, ExitCallback]] = {}
+        self._children: dict[int, _Entry] = {}
         self._polls: dict[EventLoop, TimerHandle] = {}
         self._installed = False
         self._previous: _SignalHandler = None
@@ -133,11 +134,23 @@ class ChildWatcher:
             nurse.join()
         self._previous_wakeup_fd = NO_FD
 
-    def register(self, pid: int, loop: EventLoop, on_exit: ExitCallback) -> None:
+    def register(
+        self,
+        pid: int,
+        loop: EventLoop,
+        on_exit: ExitCallback,
+        *,
+        on_reaped: ExitCallback | None = None,
+    ) -> None:
         """Track ``pid``; call ``on_exit(code)`` on ``loop`` once it has exited.
 
         ``code`` is the exit status, or minus the signal number if a
         signal killed it. Call this from ``loop``'s own thread.
+
+        ``on_reaped(code)``, if given, is called the instant the child is
+        reaped -- on whichever thread reaped it, with the watcher's lock
+        held, and even if ``loop`` closes before ``on_exit`` can run. Keep
+        it tiny (record the code; never block or touch a loop).
 
         Raises:
             RuntimeError: If the watcher is not installed.
@@ -146,10 +159,10 @@ class ChildWatcher:
         if not self._installed:
             raise RuntimeError(NOT_INSTALLED_MESSAGE)
         with self._lock:
-            self._children[pid] = (loop, on_exit)
+            self._children[pid] = (loop, on_exit, on_reaped)
             code = self._check(pid)  # it may have exited before we were tracking it
             if code is not None:
-                del self._children[pid]
+                self._record_reap(pid, code)
         if code is None:
             self._ensure_poll(loop)
         else:
@@ -178,6 +191,11 @@ class ChildWatcher:
                 else:
                     os.kill(pid, sig)
             return True
+
+    def _tracks(self, pid: int) -> bool:
+        """Return whether ``pid`` is still waiting to be reaped (for tests)."""
+        with self._lock:
+            return pid in self._children
 
     def _has_poll(self, loop: EventLoop) -> bool:
         """Return whether ``loop`` has a fallback poll scheduled (for tests)."""
@@ -231,27 +249,33 @@ class ChildWatcher:
                 loop.call_soon_threadsafe(functools.partial(self._deliver, loop, on_exit, code))
             except RuntimeError:
                 # The loop has closed: nobody can be told on it. The child
-                # is reaped (no zombie); let the owner record the code.
+                # is reaped (no zombie) and ``on_reaped`` already has the code.
                 with self._lock:
                     if not self._owns_children(loop):
                         self._polls.pop(loop, None)
-                try:
-                    on_exit(code)
-                except Exception as error:  # noqa: BLE001 -- reported, not swallowed
-                    loop.report_error(ErrorContext(EXIT_CALLBACK_ERROR_MESSAGE, error))
 
     def _sweep(self, only: EventLoop | None = None) -> list[tuple[EventLoop, ExitCallback, int]]:
         """Reap exited children (of ``only``, or of every loop); return them."""
         exited: list[tuple[EventLoop, ExitCallback, int]] = []
         with self._lock:
-            for pid, (loop, on_exit) in list(self._children.items()):
+            for pid, (loop, on_exit, _) in list(self._children.items()):
                 if only is not None and loop is not only:
                     continue
                 code = self._check(pid)
                 if code is not None:
-                    del self._children[pid]
+                    self._record_reap(pid, code)
                     exited.append((loop, on_exit, code))
         return exited
+
+    def _record_reap(self, pid: int, code: int) -> None:
+        """Forget reaped ``pid`` and call its ``on_reaped`` (caller holds ``_lock``)."""
+        loop, _, on_reaped = self._children.pop(pid)
+        if on_reaped is None:
+            return
+        try:
+            on_reaped(code)
+        except Exception as error:  # noqa: BLE001 -- reported, not swallowed
+            loop.report_error(ErrorContext(REAPED_CALLBACK_ERROR_MESSAGE, error))
 
     @staticmethod
     def _check(pid: int) -> int | None:
@@ -305,7 +329,7 @@ class ChildWatcher:
 
     def _owns_children(self, loop: EventLoop) -> bool:
         """Return whether any tracked child belongs to ``loop`` (caller holds ``_lock``)."""
-        return any(owner is loop for owner, _ in self._children.values())
+        return any(owner is loop for owner, _, _ in self._children.values())
 
 
 _watcher = ChildWatcher()

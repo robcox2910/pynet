@@ -1,5 +1,6 @@
 """Test the child watcher and subprocesses running on the event loop."""
 
+import gc
 import importlib.util
 import os
 import signal
@@ -7,12 +8,22 @@ import subprocess
 import sys
 import threading
 import time
+import warnings
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
 
-from pynet.loop import ChildWatcher, gather, get_child_watcher, get_running_loop, run, wait_for
+from pynet.loop import (
+    ChildWatcher,
+    EventLoop,
+    Task,
+    gather,
+    get_child_watcher,
+    get_running_loop,
+    run,
+    wait_for,
+)
 from pynet.loop import children as children_module
 from pynet.process import Process, create_process
 
@@ -24,6 +35,7 @@ STDIN_BYTE = b"x"
 SLEEP_SECONDS = "0.3"
 SHORT_SLEEP = "0.1"
 BELL_READ = 64
+PIPE_FDS = 6  # stdin, stdout and stderr: two ends each
 CONCURRENT_JOBS = 3
 CONCURRENT_LIMIT = 0.6
 SHORT = 2.0
@@ -166,6 +178,42 @@ class TestCreateProcess:
 
         with pytest.raises(FileNotFoundError):
             run(main())
+
+    def test_failed_spawn_closes_each_fd_once(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Close every pipe fd exactly once when the program cannot start.
+
+        A second close of a number another thread has just been given
+        would silently close *their* socket or pipe.
+        """
+        made: list[int] = []
+        closed: list[int] = []
+        real_pipe, real_close = os.pipe, os.close
+
+        def recording_pipe() -> tuple[int, int]:
+            """Record both ends of a new pipe."""
+            ends = real_pipe()
+            made.extend(ends)
+            return ends
+
+        def recording_close(fd: int) -> None:
+            """Record ``fd``, then really close it."""
+            closed.append(fd)
+            real_close(fd)
+
+        async def main() -> None:
+            """Fail to start a missing program with every pipe requested."""
+            monkeypatch.setattr(os, "pipe", recording_pipe)
+            monkeypatch.setattr(os, "close", recording_close)
+            try:
+                await create_process(["pynet-no-such-program"], stdin=True)
+            finally:
+                monkeypatch.undo()
+
+        with pytest.raises(FileNotFoundError):
+            run(main())
+        ours = [fd for fd in closed if fd in made]
+        assert sorted(ours) == sorted(made)  # each of our pipe fds closed exactly once
+        assert len(made) >= PIPE_FDS
 
     def test_wait_twice_and_after_exit(self) -> None:
         """Return the same code from every ``wait()``, even after the exit."""
@@ -418,6 +466,26 @@ class TestChildWatcher:
         finally:
             os.close(read_fd)
             os.close(write_fd)
+
+    def test_exit_queued_then_loop_closed_still_recorded(self, watcher: ChildWatcher) -> None:
+        """Record the exit even when the loop closes before delivering it."""
+        loop = EventLoop()
+        start = Task(create_process(["true"], stdout=False, stderr=False), loop)
+        while not start.done():
+            loop.run_once()
+        process = start.result()
+        pid = process.pid
+        deadline = time.monotonic() + LONG
+        while watcher._tracks(pid) and time.monotonic() < deadline:
+            time.sleep(FAST_POLL)  # the nurse reaps and queues the delivery
+        assert not watcher._tracks(pid)
+        loop.close()  # throws the queued delivery away
+        assert process.returncode == 0
+        assert process._popen.returncode == 0
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", ResourceWarning)
+            del process, start
+            gc.collect()
 
     def test_poll_stops_when_no_children_remain(self, watcher: ChildWatcher) -> None:
         """Leave no fallback timer behind once the last child has exited."""

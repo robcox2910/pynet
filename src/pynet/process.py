@@ -72,7 +72,7 @@ class Process:
         self.stdin = stdin
         self.stdout = stdout
         self.stderr = stderr
-        get_child_watcher().register(self.pid, loop, self._on_exit)
+        get_child_watcher().register(self.pid, loop, self._on_exit, on_reaped=self._on_reaped)
 
     async def wait(self) -> int:
         """Wait for the child to exit and return its exit code.
@@ -129,19 +129,21 @@ class Process:
             if reader is not None:
                 reader.close()
 
-    def _on_exit(self, code: int) -> None:
-        """Record the exit code and wake every ``wait()``.
+    def _on_reaped(self, code: int) -> None:
+        """Record the exit code the moment the watcher reaps the child.
 
-        Called by the child watcher once the child has been reaped. We set
-        ``Popen.returncode`` too (we never call ``Popen.wait``), so the
-        ``Popen`` object knows the child is gone and stays quiet when it is
-        garbage-collected.
+        Runs on whichever thread reaped it, even if our loop has already
+        closed. We set ``Popen.returncode`` (we never call ``Popen.wait``),
+        so the ``Popen`` object knows the child is gone: it stays quiet when
+        garbage-collected and never joins ``subprocess``'s own reaping list.
         """
         self.returncode = code
         self._popen.returncode = code
+
+    def _on_exit(self, code: int) -> None:
+        """Wake every ``wait()``; runs on our loop after ``_on_reaped``."""
+        self._on_reaped(code)
         waiters, self._waiters = self._waiters, []
-        if self._loop.is_closed():
-            return
         for waiter in waiters:
             if not waiter.done():
                 waiter.set_result(code)
@@ -206,7 +208,7 @@ async def create_process(
             start_new_session=new_session,
         )
     except BaseException:
-        _close_all(child_ends + our_ends)
+        _close_all(our_ends)  # child_ends are closed (once) by ``finally``
         raise
     finally:
         _close_all(child_ends)  # the child has its own copies now
