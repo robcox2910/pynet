@@ -66,6 +66,7 @@ and Python's `requests` library do under the hood.
 | **[Sync Primitives](concepts/sync-primitives.md)** | Pistol, conveyor belt, key, car park | Event, Queue, Lock and Semaphore for coordinating tasks |
 | **[Worker Threads](concepts/threads.md)** | Kitchen helper | Run blocking calls in threads without freezing the loop |
 | **[Streams](concepts/streams.md)** | Water pipes with a tap | Non-blocking TCP and pipe readers/writers with backpressure |
+| **[Subprocesses](concepts/subprocesses.md)** | Helpers and baby monitors | Run many commands at once, stream their output, notice exits, kill process groups |
 
 ## Let's Start!
 

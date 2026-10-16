@@ -74,7 +74,8 @@ Some house rules:
   non-blocking; a refused connection raises `NetConnectionError`.
 - **Pipes.** `pipe_reader(fd)` and `pipe_writer(fd)` give the same
   reader and writer over an OS pipe (using `os.read`/`os.write`). The
-  pipe reader closes its fd at EOF; the pipe writer closes it on
+  pipe reader closes its fd at EOF (or when you call `reader.close()`,
+  for a pipe you will not read to the end); the pipe writer closes it on
   `close()`.
 
 ## Try It
@@ -133,5 +134,6 @@ There is a complete echo server in `examples/echo_server.py`:
 
 ## Next Up
 
-Back to the [Event Loop](event-loop.md) overview, or compare the real
+Head to [Subprocesses](subprocesses.md), where pipe readers and writers
+carry a child process's stdin, stdout and stderr -- or compare the real
 thing with the simulated handshake in [TCP](tcp.md).

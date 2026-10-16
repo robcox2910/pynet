@@ -607,6 +607,27 @@ class TestPipes:
         with pytest.raises(ConnectionClosedError):
             run(main())
 
+    def test_reader_close_closes_fd_and_wakes_read(self) -> None:
+        """Close the fd behind a reader, waking a waiting read with EOF."""
+        read_fd, write_fd = os.pipe()
+
+        async def main() -> tuple[bytes, bool]:
+            """Close the reader while a read is waiting on an idle pipe."""
+            reader = pipe_reader(read_fd)
+            waiting = spawn(reader.read())
+            await sleep(SHORT)
+            reader.close()
+            reader.close()  # a second close is harmless
+            data = await wait_for(waiting, LONG)
+            return data, reader.at_eof()
+
+        try:
+            assert run(main()) == (b"", True)
+            with pytest.raises(OSError, match="Bad file descriptor"):
+                os.fstat(read_fd)
+        finally:
+            os.close(write_fd)
+
 
 class TestExample:
     """Test the echo server example."""

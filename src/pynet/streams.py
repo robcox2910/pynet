@@ -22,8 +22,8 @@ Rules worth knowing:
   The ``write`` that discovers it returns quietly; the next ``drain()``
   or ``write()`` raises ``ConnectionClosedError``. A reader sees a reset
   as EOF (bytes already buffered are still delivered).
-- A pipe reader owns its fd and closes it when it reaches EOF; a pipe
-  writer owns its fd and closes it on ``close()``.
+- A pipe reader owns its fd and closes it when it reaches EOF (or on
+  ``close()``); a pipe writer owns its fd and closes it on ``close()``.
 """
 
 import contextlib
@@ -196,6 +196,16 @@ class StreamReader:
         """Mark the end of the stream and wake a waiting read."""
         self._eof = True
         self._wake()
+
+    def close(self) -> None:
+        """Turn the tap off for good: stop watching and close the fd.
+
+        Use it for a pipe nobody is going to read to the end (for example
+        a child's stderr). A waiting read wakes up and sees EOF; bytes
+        already buffered can still be read. For a TCP socket this closes
+        the whole socket, writer included. Closing twice is harmless.
+        """
+        self._transport.close()
 
     async def read(self, n: int = -1) -> bytes:
         """Return up to ``n`` bytes, or everything up to EOF when ``n`` is negative.

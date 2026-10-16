@@ -9,14 +9,17 @@ paused. Many tasks share one loop, so many actors take turns on a
 single stage.
 
 ``run`` builds a fresh loop, runs one main coroutine to the end, tidies
-away any tasks still running, and closes the loop.
+away any tasks still running, and closes the loop. On the main thread it
+also switches on the child watcher, so subprocesses just work.
 """
 
 import inspect
 import itertools
+import threading
 from collections.abc import Callable, Coroutine, Sequence
 from typing import Any, cast
 
+from pynet.loop.children import get_child_watcher
 from pynet.loop.futures import Cancelled, Future
 from pynet.loop.reactor import ErrorContext, EventLoop, running_loop
 
@@ -235,6 +238,10 @@ def run[T](main: Coroutine[Any, Any, T], *, clock: Callable[[], float] | None = 
     escapes it -- any tasks still running are cancelled and given the
     chance to clean up, then the loop is closed.
 
+    On the main thread this also installs the child watcher (once), so
+    ``create_process`` works from this loop and from loops in other
+    threads.
+
     Args:
         main: The coroutine to run.
         clock: The loop's clock; defaults to ``time.monotonic``.
@@ -247,6 +254,8 @@ def run[T](main: Coroutine[Any, Any, T], *, clock: Callable[[], float] | None = 
         main.close()
         message = "run() cannot be called while a loop is running in this thread"
         raise RuntimeError(message)
+    if threading.current_thread() is threading.main_thread():
+        get_child_watcher().install()
     loop = EventLoop() if clock is None else EventLoop(clock=clock)
     try:
         task = Task(main, loop)

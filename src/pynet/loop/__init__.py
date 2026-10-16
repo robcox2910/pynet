@@ -7,6 +7,7 @@ little at a time, whenever the future they are waiting on is ready.
 """
 
 from pynet.errors import QueueEmpty, QueueFull
+from pynet.loop.children import ChildWatcher, get_child_watcher
 from pynet.loop.control import Timeout, gather, timeout, wait_for
 from pynet.loop.futures import Cancelled, Future, InvalidStateError
 from pynet.loop.reactor import ErrorContext, EventLoop, Handle, TimerHandle
@@ -16,6 +17,7 @@ from pynet.loop.threads import WorkerPool, run_in_thread
 
 __all__ = [
     "Cancelled",
+    "ChildWatcher",
     "ErrorContext",
     "Event",
     "EventLoop",
@@ -33,6 +35,7 @@ __all__ = [
     "WorkerPool",
     "current_task",
     "gather",
+    "get_child_watcher",
     "get_running_loop",
     "run",
     "run_in_thread",
