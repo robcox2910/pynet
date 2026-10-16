@@ -259,10 +259,6 @@ class TestLifecycle:
 
         assert not loop.is_running()
 
-    def test_run_forever_returns_when_nothing_to_do(self) -> None:
-        """Return rather than hang when nothing is scheduled or registered."""
-        EventLoop().run_forever()
-
     def test_call_on_closed_loop_raises(self) -> None:
         """Refuse scheduling on a closed loop."""
         loop = EventLoop()

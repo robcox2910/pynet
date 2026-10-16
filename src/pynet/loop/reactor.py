@@ -5,12 +5,18 @@ right now, and a heap of kitchen timers ordered by when they ring. Each
 turn (``run_once``) the waiter waits in ``select`` until the next timer
 is due (or forever if there is none), moves due timers onto the ready
 queue, and runs the callbacks that were ready when the turn began.
+
+The waiter also watches doors (file descriptors). A socketpair "doorbell"
+lets other threads wake a sleeping loop (the self-pipe trick).
 """
 
+import contextlib
 import heapq
 import itertools
 import logging
 import selectors
+import socket
+import threading
 import time
 from collections import deque
 from collections.abc import Callable
@@ -19,6 +25,27 @@ from dataclasses import dataclass
 type Callback = Callable[[], object]
 
 logger = logging.getLogger("pynet.loop")
+
+WAKEUP_BYTE = b"x"
+DRAIN_SIZE = 4096
+
+
+class FdWatch:
+    """Hold the reader and writer handles registered for one file descriptor."""
+
+    def __init__(self) -> None:
+        """Start with neither a reader nor a writer."""
+        self.reader: Handle | None = None
+        self.writer: Handle | None = None
+
+    def mask(self) -> int:
+        """Return the selector event mask for the handles that are set."""
+        mask = 0
+        if self.reader is not None:
+            mask |= selectors.EVENT_READ
+        if self.writer is not None:
+            mask |= selectors.EVENT_WRITE
+        return mask
 
 
 class Handle:
@@ -89,17 +116,56 @@ class EventLoop:
         self._stopping = False
         self._closed = False
         self._exception_handler: Callable[[ErrorContext], None] | None = None
+        self._ready_lock = threading.Lock()
+        self._wakeup_read, self._wakeup_write = socket.socketpair()
+        self._wakeup_read.setblocking(False)
+        self._wakeup_write.setblocking(False)
+        self._selector.register(self._wakeup_read, selectors.EVENT_READ, None)
 
     def time(self) -> float:
         """Return the loop's current time in seconds."""
         return self._clock()
 
     def call_soon(self, callback: Callback) -> Handle:
-        """Schedule ``callback`` to run on the next turn."""
+        """Schedule ``callback`` to run on the next turn.
+
+        Not thread-safe: call it only from the loop's own thread. Other
+        threads must use ``call_soon_threadsafe``.
+        """
         self._check_open()
         handle = Handle(callback)
         self._ready.append(handle)
         return handle
+
+    def call_soon_threadsafe(self, callback: Callback) -> Handle:
+        """Schedule ``callback`` from any thread and wake the loop.
+
+        Appends under a lock, then rings the doorbell (one byte on the
+        wakeup socket). A full pipe means the loop is already awake.
+        """
+        self._check_open()
+        handle = Handle(callback)
+        with self._ready_lock:
+            self._ready.append(handle)
+        with contextlib.suppress(BlockingIOError):
+            self._wakeup_write.send(WAKEUP_BYTE)
+        return handle
+
+    def add_reader(self, fd: int, callback: Callback) -> None:
+        """Call ``callback`` whenever ``fd`` is readable; replaces any reader."""
+        self._add_watch(fd, callback, reader=True)
+
+    def remove_reader(self, fd: int) -> bool:
+        """Stop watching ``fd`` for reading; return whether a reader existed."""
+        return self._remove_watch(fd, reader=True)
+
+    def add_writer(self, fd: int, callback: Callback) -> None:
+        """Call ``callback`` whenever ``fd`` is writable; replaces any writer."""
+        self._add_watch(fd, callback, reader=False)
+
+    def remove_writer(self, fd: int) -> bool:
+        """Stop watching ``fd`` for writing; return whether a writer existed."""
+        return self._remove_watch(fd, reader=False)
 
     def call_later(self, delay: float, callback: Callback) -> TimerHandle:
         """Schedule ``callback`` to run ``delay`` seconds from now."""
@@ -123,52 +189,48 @@ class EventLoop:
         return max(0.0, self._timers[0].when - self.time())
 
     def run_once(self) -> None:
-        """Run a single turn: wait, collect due timers, run ready callbacks.
+        """Run a single turn: wait, collect I/O and due timers, run callbacks.
 
+        The selector always runs, even with work ready (with timeout 0),
+        so a callback that keeps rescheduling itself cannot starve I/O.
         A "virtual" clock (one with ``virtual = True``, such as
-        ``FakeClock``) never makes the loop really sleep.
-
-        Until Task 2 registers a wakeup socket, a selector with no file
-        descriptors cannot be woken. Waiting forever on it would hang, so
-        in that case (nothing registered, nothing scheduled) the turn
-        returns immediately instead of blocking.
+        ``FakeClock``) never makes the loop really sleep: it only polls.
+        With an autojump clock, a turn that saw no I/O and has a pending
+        timer winds the clock forward to it.
         """
         timeout = self.next_timeout()
         virtual = bool(getattr(self._clock, "virtual", False))
-        events: list[object] = []
         if virtual:
-            # A pretend clock never really sleeps: poll the selector only.
-            if self._selector.get_map():
-                events = list(self._selector.select(0))
+            events = self._selector.select(0)
             if not events and timeout is not None and timeout > 0:
-                # Nothing ready, no I/O, a timer pending: an autojump clock
-                # winds itself forward so the timer fires on this same turn.
                 jump_to = getattr(self._clock, "jump_to", None)
                 if callable(jump_to) and getattr(self._clock, "autojump", False):
                     jump_to(self._timers[0].when)
-        elif timeout is not None or self._selector.get_map():
-            self._selector.select(timeout)
+        else:
+            events = self._selector.select(timeout)
+        self._dispatch_events(events)
         now = self.time()
         while self._timers and self._timers[0].when <= now:
             self._ready.append(heapq.heappop(self._timers))
-        for _ in range(len(self._ready)):
-            handle = self._ready.popleft()
+        with self._ready_lock:
+            batch = list(self._ready)
+            self._ready.clear()
+        for handle in batch:
             if not handle.cancelled():
                 self._run_handle(handle)
 
     def run_forever(self) -> None:
         """Run turns until ``stop`` is called.
 
-        Temporary (until the wakeup socket arrives): if there is nothing
-        ready, no timers and no registered file descriptors, nothing can
-        ever happen, so the loop returns rather than hanging.
+        With nothing scheduled the loop sleeps in ``select`` until a file
+        descriptor fires or another thread calls ``call_soon_threadsafe``
+        (for example ``call_soon_threadsafe(loop.stop)``). The internal
+        wakeup socket is not "work", so it never makes the loop spin.
         """
         self._check_open()
         self._running = True
         try:
             while not self._stopping:
-                if self.next_timeout() is None and not self._selector.get_map():
-                    break
                 self.run_once()
         finally:
             self._running = False
@@ -189,6 +251,9 @@ class EventLoop:
         self._closed = True
         self._ready.clear()
         self._timers.clear()
+        self._selector.unregister(self._wakeup_read)
+        self._wakeup_read.close()
+        self._wakeup_write.close()
         self._selector.close()
 
     def is_closed(self) -> bool:
@@ -211,6 +276,74 @@ class EventLoop:
         if self._closed:
             message = "Event loop is closed"
             raise RuntimeError(message)
+
+    def _add_watch(self, fd: int, callback: Callback, *, reader: bool) -> None:
+        """Register ``callback`` as the reader or writer of ``fd``."""
+        self._check_open()
+        handle = Handle(callback)
+        try:
+            key = self._selector.get_key(fd)
+        except KeyError:
+            watch = FdWatch()
+            self._set_handle(watch, handle, reader=reader)
+            self._selector.register(fd, watch.mask(), watch)
+            return
+        watch = key.data
+        old = watch.reader if reader else watch.writer
+        if old is not None:
+            old.cancel()
+        self._set_handle(watch, handle, reader=reader)
+        self._selector.modify(fd, watch.mask(), watch)
+
+    def _remove_watch(self, fd: int, *, reader: bool) -> bool:
+        """Drop the reader or writer of ``fd``; return whether one existed."""
+        if self._closed:
+            return False
+        try:
+            key = self._selector.get_key(fd)
+        except KeyError:
+            return False
+        watch = key.data
+        if watch is None:
+            return False
+        old = watch.reader if reader else watch.writer
+        if old is None:
+            return False
+        old.cancel()
+        self._set_handle(watch, None, reader=reader)
+        if watch.mask() == 0:
+            self._selector.unregister(fd)
+        else:
+            self._selector.modify(fd, watch.mask(), watch)
+        return True
+
+    @staticmethod
+    def _set_handle(watch: FdWatch, handle: Handle | None, *, reader: bool) -> None:
+        """Store ``handle`` as the reader or writer of ``watch``."""
+        if reader:
+            watch.reader = handle
+        else:
+            watch.writer = handle
+
+    def _dispatch_events(self, events: list[tuple[selectors.SelectorKey, int]]) -> None:
+        """Queue the callbacks for ready descriptors; drain the doorbell."""
+        for key, mask in events:
+            watch = key.data
+            if watch is None:
+                self._drain_wakeup()
+                continue
+            if mask & selectors.EVENT_READ and watch.reader is not None:
+                self._ready.append(watch.reader)
+            if mask & selectors.EVENT_WRITE and watch.writer is not None:
+                self._ready.append(watch.writer)
+
+    def _drain_wakeup(self) -> None:
+        """Read every pending doorbell byte."""
+        try:
+            while self._wakeup_read.recv(DRAIN_SIZE):
+                pass
+        except BlockingIOError:
+            pass
 
     def _run_handle(self, handle: Handle) -> None:
         """Run one handle, reporting (never swallowing) its exceptions."""
