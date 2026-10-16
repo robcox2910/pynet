@@ -10,8 +10,6 @@ on the telephone: you say "hello" (SYN), they say "hello back" (SYN-ACK),
 and you confirm "great, let's talk" (ACK).
 """
 
-from __future__ import annotations
-
 from dataclasses import dataclass
 from enum import StrEnum
 

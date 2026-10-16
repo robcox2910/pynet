@@ -11,8 +11,6 @@ client supports, and the server replies with a ServerHello picking
 the strongest one both sides understand.
 """
 
-from __future__ import annotations
-
 from dataclasses import dataclass, field
 from enum import StrEnum
 

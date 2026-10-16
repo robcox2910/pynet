@@ -10,8 +10,6 @@ UDP is perfect for video calls, games, and DNS lookups where speed
 matters more than perfection.
 """
 
-from __future__ import annotations
-
 from dataclasses import dataclass
 
 DEFAULT_SOURCE_PORT = 0

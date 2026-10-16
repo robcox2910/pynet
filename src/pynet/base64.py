@@ -15,8 +15,6 @@ version turns Base64 back into a text string; recovering raw bytes for
 a photo round-trip is a great exercise to try yourself.
 """
 
-from __future__ import annotations
-
 _ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 _PAD = "="
 

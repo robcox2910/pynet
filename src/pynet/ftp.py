@@ -10,8 +10,6 @@ FTP commands are plain-text lines, each ending with a carriage
 return and line feed.
 """
 
-from __future__ import annotations
-
 from dataclasses import dataclass
 
 

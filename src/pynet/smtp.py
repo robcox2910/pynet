@@ -11,8 +11,6 @@ server (HELO), say who the letter is from (MAIL FROM), who it goes
 to (RCPT TO), then send the body (DATA), and finally quit.
 """
 
-from __future__ import annotations
-
 from dataclasses import dataclass
 
 
