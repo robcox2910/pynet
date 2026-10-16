@@ -90,5 +90,6 @@ instead.)
 
 ## Next Up
 
-Messages built on frames come next. Meanwhile, revisit
+Messages built on frames come next: see
+[Messaging](messaging.md) for the envelope. Meanwhile, revisit
 [Streams](streams.md) to see how `read_exactly` works.

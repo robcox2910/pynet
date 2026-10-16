@@ -43,3 +43,7 @@ class FrameTooLargeError(PyNetError):
         super().__init__(f"frame of {size} bytes exceeds the limit of {limit} bytes")
         self.size = size
         self.limit = limit
+
+
+class ProtocolError(PyNetError):
+    """Raise when a peer sends something that breaks the message protocol."""
