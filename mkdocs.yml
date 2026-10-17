@@ -1,0 +1,90 @@
+site_name: PyNet
+site_url: https://robcox2910.github.io/pynet/
+repo_url: https://github.com/robcox2910/pynet
+repo_name: robcox2910/pynet
+
+# theme:start
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: deep-purple
+      accent: amber
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: deep-purple
+      accent: amber
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - content.code.copy
+    - navigation.sections
+    - navigation.expand
+    - toc.integrate
+    - search.highlight
+# theme:end
+
+exclude_docs: |
+  superpowers/
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
+  - pymdownx.inlinehilite
+  - tables
+
+nav:
+  - Home: index.md
+  - Base64: concepts/base64.md
+  - Cancellation and Timeouts: concepts/cancellation-and-timeouts.md
+  - DNS: concepts/dns.md
+  - The Event Loop: concepts/event-loop.md
+  - Framing: concepts/framing.md
+  - FTP: concepts/ftp.md
+  - Heartbeats and Reconnect: concepts/heartbeats-and-reconnect.md
+  - HTTP Client: concepts/http-client.md
+  - JSON Client: concepts/json-client.md
+  - Messaging: concepts/messaging.md
+  - Our Loop vs asyncio: concepts/our-loop-vs-asyncio.md
+  - Ping (ICMP): concepts/ping.md
+  - The Self-Pipe Trick: concepts/self-pipe-trick.md
+  - SMTP: concepts/smtp.md
+  - "Streams: Water Pipes with a Tap": concepts/streams.md
+  - "Subprocesses: Helpers and Baby Monitors": concepts/subprocesses.md
+  - "Sync Primitives -- Pistol, Conveyor Belt, Key and Car Park": concepts/sync-primitives.md
+  - Tasks and Await: concepts/tasks-and-await.md
+  - TCP: concepts/tcp.md
+  - "Worker Threads: Sending a Slow Errand to a Helper": concepts/threads.md
+  - Timers: concepts/timers.md
+  - TLS Handshake: concepts/tls.md
+  - UDP: concepts/udp.md
+  - URLs: concepts/urls.md
+  - "WebSocket, For Real": concepts/websocket-real.md
+  - WebSocket: concepts/websocket.md
+  # series-nav:start
+  - The series:
+      - Series home: https://robcox2910.github.io/
+      - PyOS: https://robcox2910.github.io/py-os/
+      - Pebble: https://robcox2910.github.io/pebble-lang/
+      - PyDB: https://robcox2910.github.io/pydb/
+      - PyKV: https://robcox2910.github.io/pykv/
+      - PyDocDB: https://robcox2910.github.io/pydoc-db/
+      - PyGraphDB: https://robcox2910.github.io/pygraphdb/
+      - PyTSDB: https://robcox2910.github.io/pytsdb/
+      - PyVecDB: https://robcox2910.github.io/pyvecdb/
+      - PyColDB: https://robcox2910.github.io/pycoldb/
+      - PyCrypt: https://robcox2910.github.io/pycrypt/
+      - "[You are here] PyNet": https://robcox2910.github.io/pynet/
+      - PyWeb: https://robcox2910.github.io/pyweb/
+      - PyGit: https://robcox2910.github.io/pygit/
+      - PySearch: https://robcox2910.github.io/pysearch/
+      - PyMQ: https://robcox2910.github.io/pymq/
+      - PyLLM: https://robcox2910.github.io/pyllm/
+      - PyStack: https://robcox2910.github.io/pystack/
+  # series-nav:end
