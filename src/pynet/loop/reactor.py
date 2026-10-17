@@ -31,6 +31,7 @@ _thread_state = threading.local()
 
 WAKEUP_BYTE = b"x"
 DRAIN_SIZE = 4096
+AUTOJUMP_GRACE = 0.01  # real seconds an autojump clock waits for I/O before jumping
 
 
 class WorkerPoolLike(Protocol):
@@ -44,6 +45,10 @@ class WorkerPoolLike(Protocol):
 
     def shutdown(self, *, wait: bool = True) -> None:
         """Stop the pool, optionally waiting for its threads."""
+        ...
+
+    def busy(self) -> bool:
+        """Return whether any submitted job has not finished yet."""
         ...
 
 
@@ -147,6 +152,7 @@ class EventLoop:
         self._tasks: set[object] = set()
         self._current_task: object | None = None
         self._worker_pool: WorkerPoolLike | None = None
+        self._busy_checks: list[Callable[[], bool]] = []
 
     def time(self) -> float:
         """Return the loop's current time in seconds."""
@@ -220,9 +226,14 @@ class EventLoop:
         The selector always runs, even with work ready (with timeout 0),
         so a callback that keeps rescheduling itself cannot starve I/O.
         A "virtual" clock (one with ``virtual = True``, such as
-        ``FakeClock``) never makes the loop really sleep: it only polls.
-        With an autojump clock, a turn that saw no I/O and has a pending
-        timer winds the clock forward to it.
+        ``FakeClock``) never makes the loop really sleep on a timer. With
+        an autojump clock, a turn with nothing ready and a pending timer
+        first waits ``AUTOJUMP_GRACE`` real seconds for I/O already on its
+        way; if none arrives, it winds the clock forward to the timer. But
+        while a busy check (see ``add_busy_check``) says real work is in
+        flight -- a helper-thread job, a child process -- it never jumps:
+        it waits in ``select`` for that work and lets the fake clock
+        follow real time meanwhile.
 
         While the turn runs, this loop is the thread's running loop (see
         ``running_loop``), so ``get_running_loop`` works inside callbacks.
@@ -244,13 +255,8 @@ class EventLoop:
     def _turn(self) -> None:
         """Do the work of one turn (see ``run_once``)."""
         timeout = self.next_timeout()
-        virtual = bool(getattr(self._clock, "virtual", False))
-        if virtual:
-            events = self._selector.select(0)
-            if not events and timeout is not None and timeout > 0:
-                jump_to = getattr(self._clock, "jump_to", None)
-                if callable(jump_to) and getattr(self._clock, "autojump", False):
-                    jump_to(self._timers[0].when)
+        if getattr(self._clock, "virtual", False):
+            events = self._select_virtual(timeout)
         else:
             events = self._selector.select(timeout)
         self._dispatch_events(events)
@@ -271,6 +277,40 @@ class EventLoop:
                 with self._ready_lock:
                     self._ready.extendleft(reversed(batch[index + 1 :]))
                 raise
+
+    def _select_virtual(self, timeout: float | None) -> list[tuple[selectors.SelectorKey, int]]:
+        """Poll for I/O with a virtual clock, winding an autojump clock on."""
+        jump_to = getattr(self._clock, "jump_to", None)
+        if not callable(jump_to) or not getattr(self._clock, "autojump", False) or timeout == 0:
+            return self._selector.select(0)
+        if self._is_busy():
+            # Real work is in flight: wait for it, letting fake time follow
+            # real time, so a deadline is never jumped past while it runs.
+            began = time.monotonic()
+            events = self._selector.select(timeout)
+            if self._timers:
+                waited = time.monotonic() - began
+                jump_to(min(self.time() + waited, self._timers[0].when))
+            return events
+        if timeout is None:
+            return self._selector.select(None)  # no timer to jump to: wait for I/O
+        events = self._selector.select(AUTOJUMP_GRACE)
+        if not events:
+            jump_to(self._timers[0].when)
+        return events
+
+    def add_busy_check(self, check: Callable[[], bool]) -> None:
+        """Register ``check``; while it returns True, an autojump clock holds still.
+
+        Anything that does real work on the loop's behalf -- the helper
+        thread pool, the child watcher -- registers one, so ``FakeClock(
+        autojump=True)`` never leaps past a deadline while that work runs.
+        """
+        self._busy_checks.append(check)
+
+    def _is_busy(self) -> bool:
+        """Return whether any busy check reports real work in flight."""
+        return any(check() for check in self._busy_checks)
 
     def run_forever(self) -> None:
         """Run turns until ``stop`` is called.
@@ -321,7 +361,9 @@ class EventLoop:
         if self._worker_pool is None:
             from pynet.loop.threads import WorkerPool  # noqa: PLC0415 -- threads imports the loop
 
-            self._worker_pool = WorkerPool()
+            pool = WorkerPool()
+            self._worker_pool = pool
+            self.add_busy_check(pool.busy)
         return self._worker_pool
 
     def is_closed(self) -> bool:

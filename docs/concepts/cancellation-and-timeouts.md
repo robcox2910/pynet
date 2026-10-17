@@ -110,6 +110,14 @@ run(main())
 
 In tests, pass `clock=FakeClock(autojump=True)` to `run`, and even a
 100-second timeout finishes instantly and always behaves the same way.
+The clock only jumps when everyone is truly just *waiting on timers*.
+While real work is still happening -- a helper thread running
+`run_in_thread` (a DNS lookup, say) or a child process that has not
+exited -- it holds still and lets fake time tick along with real time,
+so `wait_for(run_in_thread(time.sleep, 0.05), 5)` finishes after about
+0.05 fake seconds instead of timing out at 5. And before each jump the
+loop waits a tiny real moment (`AUTOJUMP_GRACE`, 0.01 s) for socket
+bytes already on their way.
 
 ## When to Use
 

@@ -11,6 +11,7 @@ import pytest
 
 from pynet.errors import ConnectionClosedError, NetConnectionError
 from pynet.loop import ErrorContext, Event, get_running_loop, run, sleep, spawn, wait_for
+from pynet.loop.testing import FakeClock
 from pynet.streams import (
     DEFAULT_HIGH_WATER,
     IncompleteReadError,
@@ -64,7 +65,11 @@ async def _echo_line(reader: StreamReader, writer: StreamWriter) -> None:
     await writer.drain()
 
 
-def _serve_and[T](handler: Handler, client: Callable[[Server], Awaitable[T]]) -> T:
+def _serve_and[T](
+    handler: Handler,
+    client: Callable[[Server], Awaitable[T]],
+    clock: Callable[[], float] | None = None,
+) -> T:
     """Start a server running ``handler``, run ``client`` against it, return its result."""
 
     async def main() -> T:
@@ -72,7 +77,7 @@ def _serve_and[T](handler: Handler, client: Callable[[Server], Awaitable[T]]) ->
         async with await start_server(handler, HOST, ANY_PORT) as server:
             return await wait_for(client(server), LONG)
 
-    return run(main())
+    return run(main(), clock=clock)
 
 
 def _fd(writer: StreamWriter) -> int:
@@ -135,6 +140,19 @@ class TestTcpStreams:
             return line
 
         assert _serve_and(_echo_line, client) == MESSAGE
+
+    def test_hostname_lookup_under_autojump_clock(self) -> None:
+        """Wait for the helper-thread lookup instead of jumping past the deadline."""
+
+        async def client(server: Server) -> bytes:
+            """Connect by name and round-trip a line."""
+            reader, writer = await open_connection(HOSTNAME, server.port)
+            writer.write(MESSAGE)
+            line = await reader.read_until()
+            await _close(writer)
+            return line
+
+        assert _serve_and(_echo_line, client, FakeClock(autojump=True)) == MESSAGE
 
     def test_open_connection_refused_raises(self) -> None:
         """Raise NetConnectionError when nothing is listening."""

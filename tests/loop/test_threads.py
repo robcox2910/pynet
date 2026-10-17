@@ -6,7 +6,18 @@ import time
 
 import pytest
 
-from pynet.loop import EventLoop, WorkerPool, gather, run, run_in_thread, sleep, spawn
+from pynet.loop import (
+    EventLoop,
+    WorkerPool,
+    gather,
+    get_running_loop,
+    run,
+    run_in_thread,
+    sleep,
+    spawn,
+    wait_for,
+)
+from pynet.loop.testing import FakeClock
 
 VALUE = 42
 SLEEP_SECONDS = 0.1
@@ -19,6 +30,7 @@ POOL_SIZE = 2
 JOBS = 6
 ADDEND = 3
 RACE_ROUNDS = 200
+FAKE_DEADLINE = 5.0
 
 
 class BoomError(Exception):
@@ -241,3 +253,50 @@ class TestCloseRace:
             start.set()
             loop.close()
         assert not caplog.records
+
+
+class TestAutojumpWithThreads:
+    """Test that an autojump clock waits for helper threads instead of jumping."""
+
+    def test_thread_job_beats_a_long_fake_timeout(self) -> None:
+        """Finish a short thread job well inside a long ``wait_for`` deadline."""
+
+        async def main() -> tuple[int, float]:
+            """Run a sleepy thread job under a long timeout; return value and fake time."""
+            loop = get_running_loop()
+            start = loop.time()
+            value = await wait_for(run_in_thread(_slow_add, VALUE), FAKE_DEADLINE)
+            return value, loop.time() - start
+
+        value, elapsed = run(main(), clock=FakeClock(autojump=True))
+
+        assert value == VALUE
+        assert elapsed < FAKE_DEADLINE
+
+    def test_pool_reports_busy_while_a_job_runs(self) -> None:
+        """Count a job as outstanding until its completion callback has run."""
+        pool = WorkerPool(max_workers=POOL_SIZE)
+        started = threading.Event()
+        release = threading.Event()
+        finished = threading.Event()
+
+        def job() -> None:
+            """Block until released."""
+            started.set()
+            release.wait()
+
+        pool.submit(job, lambda _value, _error: finished.set())
+        started.wait()
+        busy_while_running = pool.busy()
+        release.set()
+        finished.wait()
+        pool.shutdown(wait=True)
+
+        assert busy_while_running
+        assert not pool.busy()
+
+
+def _slow_add(value: int) -> int:
+    """Sleep briefly (real time), then return ``value``."""
+    time.sleep(SLEEP_SECONDS)
+    return value

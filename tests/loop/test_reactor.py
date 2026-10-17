@@ -1,11 +1,13 @@
 """Test the reactor: callbacks, timers, fake clock and error reporting."""
 
 import logging
+import selectors
 import time
 
 import pytest
 
 from pynet.loop import ErrorContext, EventLoop
+from pynet.loop.reactor import AUTOJUMP_GRACE
 from pynet.loop.testing import FakeClock
 
 DELAY = 5.0
@@ -17,6 +19,21 @@ START_TIME = 100.0
 LONG = 1000.0
 FAST = 1.0
 JUMP_START = 5.0
+TICK_REAL = 0.01
+
+
+class _RecordingSelector(selectors.DefaultSelector):
+    """Remember every timeout ``select`` is called with."""
+
+    def __init__(self) -> None:
+        """Start with no recorded timeouts."""
+        super().__init__()
+        self.timeouts: list[float | None] = []
+
+    def select(self, timeout: float | None = None) -> list[tuple[selectors.SelectorKey, int]]:
+        """Record ``timeout``, then select as usual."""
+        self.timeouts.append(timeout)
+        return super().select(timeout)
 
 
 class TestCallSoon:
@@ -316,6 +333,31 @@ class TestVirtualClock:
         assert time.monotonic() - began < FAST
         assert fired == ["a"]
         assert clock() >= LONG * 2
+
+    def test_autojump_waits_a_grace_period_before_jumping(self) -> None:
+        """Give in-flight I/O a short real grace in ``select`` before jumping."""
+        selector = _RecordingSelector()
+        loop = EventLoop(clock=FakeClock(autojump=True), selector=selector)
+        loop.call_later(LONG, lambda: None)
+
+        loop.run_once()
+
+        assert selector.timeouts == [AUTOJUMP_GRACE]
+
+    def test_autojump_holds_still_while_the_loop_is_busy(self) -> None:
+        """Never jump past a timer while a busy check says real work is in flight."""
+        clock = FakeClock(autojump=True)
+        loop = EventLoop(clock=clock)
+        busy = [True]
+        fired: list[str] = []
+        loop.add_busy_check(lambda: bool(busy))
+        loop.call_later(LONG, lambda: fired.append("late"))
+        loop.call_later(TICK_REAL, lambda: busy.clear())  # busy ends after a real tick
+
+        loop.run_once()
+
+        assert fired == []
+        assert clock() < LONG
 
     def test_autojump_fires_on_same_turn(self) -> None:
         """Fire the earliest timer in the very run_once that jumps."""

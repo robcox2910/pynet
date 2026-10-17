@@ -48,6 +48,7 @@ class WorkerPool:
         self._threads: list[threading.Thread] = []
         self._lock = threading.Lock()
         self._shutdown = False
+        self._outstanding = 0
 
     def submit[T](self, fn: Callable[[], T], on_done: DoneCallback[T]) -> None:
         """Queue ``fn``; call ``on_done(result, error)`` from the worker thread.
@@ -63,6 +64,7 @@ class WorkerPool:
             if self._shutdown:
                 message = "Cannot submit to a pool that has been shut down"
                 raise RuntimeError(message)
+            self._outstanding += 1
             self._queue.put((fn, cast("DoneCallback[object]", on_done)))
             if len(self._threads) < self._max_workers:
                 thread = threading.Thread(target=self._work, name="pynet-worker", daemon=True)
@@ -86,6 +88,11 @@ class WorkerPool:
             for thread in threads:
                 thread.join()
 
+    def busy(self) -> bool:
+        """Return whether a submitted job has not finished (``on_done`` included)."""
+        with self._lock:
+            return self._outstanding > 0
+
     def thread_count(self) -> int:
         """Return how many worker threads are alive."""
         with self._lock:
@@ -104,6 +111,8 @@ class WorkerPool:
                 self._finish(on_done, None, exc)
             else:
                 self._finish(on_done, value, None)
+            with self._lock:
+                self._outstanding -= 1
 
     @staticmethod
     def _finish(on_done: DoneCallback[object], value: object, error: BaseException | None) -> None:

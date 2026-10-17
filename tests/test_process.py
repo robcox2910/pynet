@@ -26,6 +26,7 @@ from pynet.loop import (
     wait_for,
 )
 from pynet.loop import children as children_module
+from pynet.loop.testing import FakeClock
 from pynet.process import Process, create_process
 
 EXIT_CODE = 3
@@ -339,6 +340,19 @@ class TestSignals:
             return code, output
 
         assert run(main()) == (0, HI)
+
+    def test_wait_under_autojump_clock(self) -> None:
+        """Wait for a real child instead of jumping the fake clock past a deadline."""
+
+        async def main() -> int:
+            """Run a short sleep under a long fake timeout."""
+            process = await create_process(["sleep", SHORT_SLEEP])
+            try:
+                return await wait_for(process.wait(), LONG)
+            finally:
+                process.close()
+
+        assert run(main(), clock=FakeClock(autojump=True)) == 0
 
     def test_kill_group_needs_new_session(self) -> None:
         """Refuse to kill a group the child does not lead."""

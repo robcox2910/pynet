@@ -38,6 +38,7 @@ import os
 import signal
 import socket
 import threading
+import weakref
 from collections.abc import Callable
 from types import FrameType
 
@@ -77,6 +78,7 @@ class ChildWatcher:
         self._bell: socket.socket | None = None
         self._nurse: threading.Thread | None = None
         self._previous_wakeup_fd = NO_FD
+        self._busy_hooked: weakref.WeakSet[EventLoop] = weakref.WeakSet()
 
     def install(self) -> None:
         """Start listening for ``SIGCHLD``; installing twice does nothing.
@@ -158,6 +160,10 @@ class ChildWatcher:
         """
         if not self._installed:
             raise RuntimeError(NOT_INSTALLED_MESSAGE)
+        if loop not in self._busy_hooked:
+            # A loop with a live child is busy: an autojump clock waits for it.
+            self._busy_hooked.add(loop)
+            loop.add_busy_check(functools.partial(self.has_children, loop))
         with self._lock:
             self._children[pid] = (loop, on_exit, on_reaped)
             code = self._check(pid)  # it may have exited before we were tracking it
@@ -191,6 +197,11 @@ class ChildWatcher:
                 else:
                     os.kill(pid, sig)
             return True
+
+    def has_children(self, loop: EventLoop) -> bool:
+        """Return whether any child of ``loop`` is still waiting to be reaped."""
+        with self._lock:
+            return self._owns_children(loop)
 
     def _tracks(self, pid: int) -> bool:
         """Return whether ``pid`` is still waiting to be reaped (for tests)."""
