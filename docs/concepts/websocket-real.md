@@ -351,3 +351,7 @@ the one in Python's standard library? See [Our Loop vs asyncio](our-loop-vs-asyn
 
 In PyStack, the job scheduler's dashboard gets live updates through PyWeb,
 which upgrades its HTTP connections with `accept_websocket`.
+
+## See also
+
+- [PyWeb: WebSockets in PyWeb](https://robcox2910.github.io/pyweb/concepts/websockets-in-pyweb/) -- how a web server answers the phone call and upgrades the connection.
