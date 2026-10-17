@@ -31,6 +31,18 @@ Every message starts with one JSON envelope:
 
 `id` and `method` are left out when they are `None`.
 
+### Boxes Inside Boxes
+
+A `body` can hold lists inside lists, like a box inside a box inside a
+box. A sneaky sender could send a box nested 100,000 deep, hoping the
+other end would get lost unpacking it and crash. So we set our own rule:
+at most `MAX_NESTING` (100) levels. Anything deeper is refused with a
+`ProtocolError`, both when sending and when receiving.
+
+Why not just let Python complain? Because how deep Python can go is
+different on different computers (a Mac and a Linux server disagree!).
+A rule we pick ourselves behaves the same everywhere.
+
 ## Frame Layout
 
 Each frame payload starts with a one-byte **kind**: `J` for the JSON
@@ -240,7 +252,8 @@ notifications over one connection, optionally with binary payloads.
 - Every protocol breach raises `ProtocolError`: unknown kind, orphan
   binary frame, bad UTF-8 or JSON, non-object JSON, wrong version
   (`unsupported_version`), unknown type, missing `id` or `method`, bad
-  attachment count, NaN/Infinity.
+  attachment count, NaN/Infinity, bodies nested deeper than `MAX_NESTING`
+  (exactly `MAX_NESTING` still round-trips).
 - The decoder is reusable after an error.
 - Over real sockets: request/response, replies with attachments, pushes
   both ways, and a fast request overtaking a slow one on one connection.

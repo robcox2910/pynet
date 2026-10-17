@@ -8,6 +8,7 @@ from pynet.errors import ProtocolError
 from pynet.messaging import (
     KIND_BINARY,
     KIND_JSON,
+    MAX_NESTING,
     PROTOCOL_VERSION,
     JsonValue,
     Message,
@@ -167,6 +168,14 @@ class TestEnvelopeShape:
 class TestRoundTrip:
     """Test encode then decode."""
 
+    def test_body_at_nesting_limit_roundtrips(self) -> None:
+        """Accept a body nested exactly MAX_NESTING levels deep."""
+        body: JsonValue = None
+        for _ in range(MAX_NESTING):
+            body = [body]
+        msg = Message(MessageType.PUSH, method=METHOD, body=body)
+        assert MessageDecoder().feed(encode_message(msg)[0]) == msg
+
     def test_roundtrip_with_attachments(self) -> None:
         """Rebuild a message and its attachments exactly."""
         message = Message(
@@ -251,6 +260,13 @@ class TestProtocolErrors:
     def test_bad_frame_raises(self, frame: bytes) -> None:
         """Raise ProtocolError for each malformed frame."""
         with pytest.raises(ProtocolError):
+            MessageDecoder().feed(frame)
+
+    def test_closed_deep_nesting_refused(self) -> None:
+        """Refuse well-formed JSON that nests deeper than MAX_NESTING."""
+        deep = b"[" * (MAX_NESTING + 1) + b"]" * (MAX_NESTING + 1)
+        frame = KIND_JSON + b'{"v":1,"type":"push","method":"m","body":' + deep + b"}"
+        with pytest.raises(ProtocolError, match="nested deeper"):
             MessageDecoder().feed(frame)
 
     def test_deeply_nested_json_refused_and_decoder_reusable(self) -> None:

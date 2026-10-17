@@ -22,6 +22,10 @@ Rules worth knowing:
 
 - NaN and infinity are not valid JSON, so they are refused both when
   encoding and when decoding.
+- A body may nest lists and objects at most ``MAX_NESTING`` deep, like
+  boxes inside boxes. Deeper is refused both ways, so a "box bomb" can
+  never crash either end (how deep Python itself can go differs between
+  computers, so we pick the limit ourselves).
 - Any breach of the protocol raises ``ProtocolError``. The decoder then
   forgets any half-finished message, so it can be used again.
 """
@@ -36,6 +40,7 @@ PROTOCOL_VERSION = 1
 KIND_JSON = b"J"
 KIND_BINARY = b"B"
 KIND_SIZE = 1
+MAX_NESTING = 100
 
 type JsonValue = None | bool | int | float | str | list[JsonValue] | dict[str, JsonValue]
 
@@ -97,6 +102,7 @@ def encode_message(msg: Message) -> list[bytes]:
     envelope["body"] = msg.body
     if msg.attachments:
         envelope["attachments"] = len(msg.attachments)
+    _check_nesting(msg.body)
     try:
         text = json.dumps(envelope, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
         payload = text.encode("utf-8")
@@ -104,6 +110,23 @@ def encode_message(msg: Message) -> list[bytes]:
         message = f"cannot encode envelope: {error}"
         raise ProtocolError(message) from error
     return [KIND_JSON + payload, *(KIND_BINARY + data for data in msg.attachments)]
+
+
+def _check_nesting(value: JsonValue) -> None:
+    """Refuse ``value`` if lists/objects nest deeper than ``MAX_NESTING``.
+
+    Walks with its own stack instead of recursing, so the check itself
+    can never hit Python's recursion limit.
+    """
+    stack: list[tuple[JsonValue, int]] = [(value, 0)]
+    while stack:
+        item, depth = stack.pop()
+        if isinstance(item, list | dict):
+            if depth >= MAX_NESTING:
+                message = f"nested deeper than {MAX_NESTING} levels"
+                raise ProtocolError(message)
+            children = item.values() if isinstance(item, dict) else item
+            stack.extend((child, depth + 1) for child in children)
 
 
 def _reject_constant(name: str) -> JsonValue:
@@ -191,6 +214,7 @@ class MessageDecoder:
         if not isinstance(data, dict):
             message = "envelope must be a JSON object"
             raise ProtocolError(message)
+        _check_nesting(data.get("body"))
         if data.get("v") != PROTOCOL_VERSION:
             message = f"unsupported_version: {data.get('v')!r}"
             raise ProtocolError(message)
