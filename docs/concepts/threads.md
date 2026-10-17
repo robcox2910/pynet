@@ -69,5 +69,5 @@ with `add_reader`, timers): that is cheaper than a thread.
 
 ## Next Up
 
-Head to [Streams](streams.md), which use `run_in_thread` for DNS
-lookups so connecting by name never freezes the loop.
+Slow work is handled. But how does a helper thread tap the waiter on the shoulder?
+Find out in [The Self-Pipe Trick](self-pipe-trick.md).

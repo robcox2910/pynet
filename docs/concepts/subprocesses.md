@@ -156,8 +156,5 @@ If you only need one short command and nothing else is happening, plain
 
 ## Next Up
 
-Back to the [Event Loop](event-loop.md) overview, or see how the loop
-is woken from other threads in [The Self-Pipe Trick](self-pipe-trick.md).
-
-Once bytes flow, learn how to cut them into messages with
-[Framing](framing.md).
+Children talk through pipes. Head to [Streams](streams.md) to see the readers
+and writers that carry their output, and real TCP connections too.

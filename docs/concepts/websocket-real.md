@@ -326,6 +326,8 @@ the rest.
 
 ## Next Up
 
-The phone line is real. Next, PyStack puts it to work: the job
-scheduler's dashboard gets live updates through PyWeb, which upgrades
-its HTTP connections with `accept_websocket`.
+The phone line is real. Last stop: how does our homemade loop compare with
+the one in Python's standard library? See [Our Loop vs asyncio](our-loop-vs-asyncio.md).
+
+In PyStack, the job scheduler's dashboard gets live updates through PyWeb,
+which upgrades its HTTP connections with `accept_websocket`.

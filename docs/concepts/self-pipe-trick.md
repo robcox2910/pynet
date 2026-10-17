@@ -61,5 +61,5 @@ an idle loop sleeps in `select` instead of spinning.
 
 ## Next Up
 
-Now the loop can hear the outside world. Next we give it
-promises to wait on: see [Tasks and Await](tasks-and-await.md).
+The loop can now hear the outside world, including finished child processes.
+Head to [Subprocesses](subprocesses.md) to run many commands at once.

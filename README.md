@@ -78,6 +78,37 @@ data = json_get("http://api.example.com/users/1")
 print(data["name"])  # The user's name from the API
 ```
 
+### Real Networking -- A Phone Line That Rings
+
+PyNet has its own event loop, built from scratch, and real sockets that run
+on it. This echo server and client talk over a real TCP connection on your
+own computer:
+
+```python
+from pynet.loop import run
+from pynet.streams import open_connection, start_server
+
+
+async def echo(reader, writer):
+    data = await reader.read(1024)
+    writer.write(data)
+    await writer.drain()
+    writer.close()
+
+
+async def main():
+    async with await start_server(echo, "127.0.0.1", 0) as server:
+        reader, writer = await open_connection("127.0.0.1", server.port)
+        writer.write(b"hello, phone line!")
+        await writer.drain()
+        print(await reader.read(1024))
+        writer.close()
+        await writer.wait_closed()
+
+
+run(main())  # b'hello, phone line!'
+```
+
 ## Features
 
 - **URL Parsing** -- Break apart web addresses into their components
@@ -93,6 +124,17 @@ print(data["name"])  # The user's name from the API
 - **Ping/ICMP** -- Check if a host is reachable
 - **Base64** -- Encode and decode binary data as text
 - **TLS** -- Encrypted connections with certificates
+- **Event Loop** -- A from-scratch `select`-based loop with timers, tasks,
+  `await`, cancellation, timeouts, and sync primitives (Event, Queue, Lock,
+  Semaphore)
+- **Real TCP Streams** -- Non-blocking `start_server` and `open_connection`
+  with backpressure
+- **Subprocesses** -- Run many commands at once and kill whole process groups
+- **Framing and Messaging** -- Length-prefixed frames and request/reply/push
+  messages with binary attachments
+- **Heartbeats and Reconnect** -- Ping/pong liveness checks and redialling
+  with exponential backoff and jitter
+- **Real WebSocket** -- RFC 6455 handshake, frames, and live connections
 - **CLI Tool** -- Interactive demo of networking concepts
 - **100% Typed** -- Full type annotations with strict Pyright checking
 
@@ -113,6 +155,16 @@ uv run pynet
 # Run the tests
 uv run pytest
 ```
+
+## Examples to Run
+
+Each file in `examples/` runs with `uv run python examples/<name>.py`:
+
+- `echo_server.py` -- a parrot on a real TCP line (try it with `nc 127.0.0.1 8888`)
+- `job_runner.py` -- start three commands at once and watch each finish
+- `chat_room.py` -- a group channel built on messaging requests and pushes
+- `heartbeat_demo.py` -- watch pings go out and a frozen server get noticed
+- `ws_echo.py` -- a WebSocket echo server you can connect to from a browser
 
 ## Documentation
 

@@ -134,6 +134,5 @@ There is a complete echo server in `examples/echo_server.py`:
 
 ## Next Up
 
-Head to [Subprocesses](subprocesses.md), where pipe readers and writers
-carry a child process's stdin, stdout and stderr -- or compare the real
-thing with the simulated handshake in [TCP](tcp.md).
+A stream is a river of bytes with no edges. Head to [Framing](framing.md) to
+learn how to cut it into whole messages.
