@@ -158,11 +158,140 @@ Frame(fin=True, opcode=<Opcode.TEXT: 1>, payload=b'Hello')
 reading a single payload byte (`FrameTooLargeError`), and a stream that
 ends mid-frame raises `ConnectionClosedError`.
 
+## Talking: A Real Conversation
+
+With the line open and envelopes in hand, `pynet.ws.WebSocket` holds
+the actual conversation. You send whole messages with `send_text` or
+`send_bytes`, and `recv()` hands you the next whole message -- a `str`
+for text, `bytes` for binary. Behind the scenes it:
+
+- **Glues fragments together.** A long message may arrive in pieces
+  (`TEXT` with FIN=0, then `CONTINUATION` frames until FIN=1). You only
+  ever see the finished message.
+- **Answers "are you there?"** A `PING` is answered with a `PONG`
+  carrying the same bytes, even between fragments. Pongs we receive are
+  skipped.
+- **Checks the rules.** Text must be valid UTF-8, a message must fit in
+  `max_message_size` (1 MiB by default), and frames from a client must
+  be masked. Break a rule and we hang up with the matching code.
+
+Sends go through a lock, so a pong can never be wedged in the middle of
+another frame's bytes.
+
+## Hanging Up Politely
+
+You do not just slam the phone down. Whoever wants to finish says
+"goodbye" (a `CLOSE` frame with a code and reason), the other side says
+"goodbye" back, and only then is the line put down.
+
+```
+Client                                 Server
+  |  CLOSE 1000 "bye"                    |
+  | -----------------------------------> |  recv() raises WebSocketClosed(1000, "bye")
+  |                      CLOSE 1000      |
+  | <----------------------------------- |
+  |  close() returns                     |
+  X  TCP connection closed               X
+```
+
+`close()` sends the goodbye, waits up to 5 seconds (`CLOSE_TIMEOUT`) for
+the reply, then closes the stream. Calling it twice is harmless. Once a
+conversation is over, every `recv()` and send raises the same
+`WebSocketClosed` (it is a `ConnectionClosedError`, so old handlers that
+catch that still work), and `ws.closed` / `ws.close_code` tell you how
+it ended.
+
+### Close Codes
+
+| Code | Name | Meaning |
+|------|------|---------|
+| 1000 | `CLOSE_NORMAL` | All done, goodbye. |
+| 1001 | `CLOSE_GOING_AWAY` | Leaving (page closed, server shutting down). |
+| 1002 | `CLOSE_PROTOCOL_ERROR` | You broke the rules (unmasked client frame, stray continuation...). |
+| 1003 | `CLOSE_UNSUPPORTED_DATA` | I cannot accept that kind of data. |
+| 1005 | -- | The CLOSE had no code. Only ever *reported*, never sent. |
+| 1006 | -- | The line dropped with no CLOSE at all. Only ever *reported*, never sent. |
+| 1007 | `CLOSE_INVALID_UTF8` | Your text (or close reason) was not valid UTF-8. |
+| 1009 | `CLOSE_TOO_BIG` | Your message was bigger than I can swallow. |
+| 1011 | `CLOSE_INTERNAL_ERROR` | My handler crashed. |
+
+## Answering and Dialling
+
+- `serve_websocket(handler, host, port)` is a whole switchboard: it reads
+  each request head (at most 16 KiB), checks the handshake, answers
+  `101`, and runs `handler(ws)`. A bad request gets
+  `400 Bad Request` and is hung up on. When the handler returns the
+  socket is closed with 1000; if it crashes, with 1011.
+- `accept_websocket(reader, writer, method=..., headers=...)` does the
+  answering part only, for a web server (like PyWeb) that already read
+  the request head itself.
+- `connect_websocket(host, port, path="/")` dials, then checks the
+  answer is `101` with the right `Sec-WebSocket-Accept`.
+
+```python
+from pynet.loop import run
+from pynet.ws import WebSocketClosed, connect_websocket, serve_websocket
+
+
+async def shout(ws):
+    """Send every text message back in capitals."""
+    try:
+        while True:
+            await ws.send_text((await ws.recv()).upper())
+    except WebSocketClosed as closed:
+        print("server saw goodbye:", closed.code, closed.reason)
+
+
+async def main():
+    async with await serve_websocket(shout, "127.0.0.1", 0) as server:
+        ws = await connect_websocket("127.0.0.1", server.port)
+        await ws.send_text("hello")
+        print(await ws.recv())
+        await ws.close(1000, "bye")
+        print("client closed:", ws.closed, ws.close_code)
+
+
+run(main())
+```
+
+Output:
+
+```
+HELLO
+server saw goodbye: 1000 bye
+client closed: True 1000
+```
+
+### From a Browser
+
+Start the example server (`uv run python examples/ws_echo.py`), then
+**paste this into a browser page** (for example a file `echo.html`
+opened in your browser). It is not run by our tests:
+
+```html
+<!-- paste into a browser page -->
+<input id="msg" value="hello"> <button id="send">Send</button>
+<pre id="log"></pre>
+<script>
+  const log = (line) => (document.getElementById("log").textContent += line + "\n");
+  const ws = new WebSocket("ws://127.0.0.1:8765/");
+  ws.onopen = () => log("connected");
+  ws.onmessage = (event) => log("echo: " + event.data);
+  ws.onclose = (event) => log("closed " + event.code);
+  document.getElementById("send").onclick = () => ws.send(document.getElementById("msg").value);
+</script>
+```
+
+The browser does the handshake and masking for you; our server does
+the rest.
+
 ## When to Use
 
-- Upgrading an HTTP connection (for example from PyWeb) to WebSocket.
-- Dialling a WebSocket server from a client.
-- Never by itself: the handshake only opens the line; frames carry the words.
+- Live updates pushed to a browser (like the job scheduler's dashboard).
+- Upgrading an HTTP connection (for example from PyWeb) with `accept_websocket`.
+- Dialling a WebSocket server from Python with `connect_websocket`.
+- Not for talking between two Python programs you control: plain
+  [messaging](messaging.md) over TCP is simpler.
 
 ## What We Test
 
@@ -181,7 +310,22 @@ ends mid-frame raises `ConnectionClosedError`.
 - Oversize frames fail before the payload is read; truncation is a closed connection.
 - `apply_mask` equals the byte-by-byte definition on 1 MiB.
 
+### What We Test (Connections)
+
+- Text and binary messages echo back; the example server echoes both.
+- A `TEXT` fin=0 + `CONTINUATION` fin=1 pair is reassembled, even with a ping between.
+- Pings are answered with matching pongs; pongs are skipped.
+- Closing with 1000 "bye" reaches the server exactly; codes are echoed;
+  an empty CLOSE is 1005; a 1-byte CLOSE or reserved code is 1002.
+- Bad UTF-8 is 1007, oversize messages (one frame or several) are 1009,
+  unmasked client frames and stray/overlapping fragments are 1002.
+- A peer that vanishes gives 1006; `close()` gives up after its timeout.
+- After closing, every call raises `WebSocketClosed`.
+- Bad handshakes get `400 Bad Request`; the client rejects a non-101
+  answer, a wrong accept value, and a server that hangs up.
+
 ## Next Up
 
-Frames are the envelopes. Coming soon: connections that send and
-receive whole messages (fragments, pings, closing) and endpoints that use them.
+The phone line is real. Next, PyStack puts it to work: the job
+scheduler's dashboard gets live updates through PyWeb, which upgrades
+its HTTP connections with `accept_websocket`.
