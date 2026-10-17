@@ -89,11 +89,80 @@ not 16 bytes -- raises `HandshakeError` naming what was wrong.
 `(version, status_code, headers)` for a response. Header names come
 back lower-cased and repeated headers are joined with `", "`.
 
+## Frames: Envelopes for Words
+
+Once the line is open, every message travels in an **envelope** called a
+frame: a tiny header, then the words (the payload).
+
+```
+ 0                   1                   2                   3
+ 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
++-+-+-+-+-------+-+-------------+-------------------------------+
+|F|R|R|R| opcode|M| payload len |   extended payload length     |
+|I|S|S|S|  (4)  |A|    (7)      |   (16 or 64 bits, if needed)  |
+|N|V|V|V|       |S|             |                               |
+| |1|2|3|       |K|             |                               |
++-+-+-+-+-------+-+-------------+-------------------------------+
+| masking key (4 bytes, only if MASK = 1) | payload ...         |
++-----------------------------------------+---------------------+
+```
+
+- **FIN** -- 1 means "this is the last piece of the message".
+- **RSV1-3** -- reserved; must be 0 (we reject anything else).
+- **opcode** -- `TEXT`, `BINARY`, `CONTINUATION`, or the control frames
+  `CLOSE`, `PING`, `PONG`. Control frames must be whole (FIN) and at most
+  125 bytes.
+- **MASK** -- 1 when a 4-byte key follows. Clients must mask; servers must not.
+- **payload len** -- 0-125 is the length itself. 126 means "the real
+  length is in the next 2 bytes"; 127 means "the next 8 bytes". The
+  shortest form must be used, and a peer that wastes bytes is rejected.
+
+### Masking: Scrambling with a Stencil
+
+The client picks a random 4-byte key and XORs byte `i` of the payload
+with `key[i % 4]`. XOR is its own undo, so the server applies the same
+stencil to read the words. It is not encryption (the key is right there
+in the frame); it only stops a client's bytes looking like HTTP to a
+confused proxy. `apply_mask` repeats the key to the payload's length and
+XORs it as one big integer, which keeps 1 MiB fast.
+
+```python
+from pynet.loop import run
+from pynet.streams import pipe_reader
+from pynet.ws import Frame, Opcode, encode_ws_frame, read_ws_frame
+import os
+
+MASK = bytes([0x37, 0xFA, 0x21, 0x3D])
+wire = encode_ws_frame(Frame(True, Opcode.TEXT, b"Hello"), mask_key=MASK)
+print(wire.hex())
+
+
+async def main():
+    read_fd, write_fd = os.pipe()
+    os.write(write_fd, wire)
+    os.close(write_fd)
+    return await read_ws_frame(pipe_reader(read_fd), max_payload=1024, expect_masked=True)
+
+
+print(run(main()))
+```
+
+Output:
+
+```
+818537fa213d7f9f4d5158
+Frame(fin=True, opcode=<Opcode.TEXT: 1>, payload=b'Hello')
+```
+
+`read_ws_frame` checks the announced length against `max_payload` before
+reading a single payload byte (`FrameTooLargeError`), and a stream that
+ends mid-frame raises `ConnectionClosedError`.
+
 ## When to Use
 
 - Upgrading an HTTP connection (for example from PyWeb) to WebSocket.
 - Dialling a WebSocket server from a client.
-- Never by itself: it only does the opening. Frames come next.
+- Never by itself: the handshake only opens the line; frames carry the words.
 
 ## What We Test
 
@@ -104,7 +173,15 @@ back lower-cased and repeated headers are joined with `", "`.
 - Malformed HTTP heads raise `HandshakeError`.
 - `b64_decode_bytes` returns binary data exactly and rejects bad Base64.
 
+### What We Test (Frames)
+
+- The RFC 6455 section 5.7 examples, masked and unmasked.
+- 16-bit and 64-bit length forms round-trip; non-minimal forms are rejected.
+- Reserved bits, unknown opcodes, bad control frames and mask mismatches.
+- Oversize frames fail before the payload is read; truncation is a closed connection.
+- `apply_mask` equals the byte-by-byte definition on 1 MiB.
+
 ## Next Up
 
-The line is open, but nobody has spoken yet. Coming soon: real
-WebSocket frames, then connections and endpoints that use them.
+Frames are the envelopes. Coming soon: connections that send and
+receive whole messages (fragments, pings, closing) and endpoints that use them.
