@@ -47,3 +47,22 @@ class FrameTooLargeError(PyNetError):
 
 class ProtocolError(PyNetError):
     """Raise when a peer sends something that breaks the message protocol."""
+
+
+class RemoteError(PyNetError):
+    """Raise when the other end answers a request with an error reply.
+
+    Handlers may also raise it on purpose to send a structured error:
+    the peer then replies with this ``code`` and message.
+
+    Args:
+        code: A short machine-readable reason, such as ``"unknown_method"``.
+        remote_message: The human-readable explanation from the other end.
+
+    """
+
+    def __init__(self, code: str, remote_message: str) -> None:
+        """Remember the error ``code`` and ``remote_message``."""
+        super().__init__(f"{code}: {remote_message}")
+        self.code = code
+        self.remote_message = remote_message

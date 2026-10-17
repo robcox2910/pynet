@@ -64,6 +64,141 @@ print(results[:-1])
 print(results[-1] == message)
 ```
 
+## Talking Over a Live Connection: the `Peer`
+
+The codec only packs and unpacks envelopes. A **`Peer`** is one
+walkie-talkie: it owns a live connection, keeps track of its own call
+signs, and does the talking and listening for you.
+
+```
+   client Peer                                    server Peer
+   -----------                                    -----------
+   request("echo", {"x":1})
+     id 1 --->  {"type":"request","id":1,...}  --->  runs the "echo"
+                                                     handler in its
+   request("slow")                                   own task
+     id 2 --->  {"type":"request","id":2,...}  --->  runs "slow" in
+                                                     another task
+     <---  {"type":"response","id":1,...}  <---  "echo" done first
+   the id-1 caller wakes up
+     <---  {"type":"response","id":2,...}  <---  "slow" done later
+   the id-2 caller wakes up
+
+     <---  {"type":"push","method":"news"}  <---  push(): no id,
+   the "news" handler runs                        no answer expected
+```
+
+- **Request / response.** `await peer.request(method, body)` picks the
+  next call sign (1, 2, 3, ...), sends the request, and waits for the
+  answer with the same id. Every incoming request runs its handler in
+  its own task, so a slow call never holds up a fast one on the same
+  connection. A handler returns a JSON value (the response body) or a
+  `Reply(body, attachments)` when it wants to send bytes back too.
+- **Push.** `await peer.push(method, body)` is "Unit 42, FYI, over" -- no
+  call sign and no answer. Either side can push at any time. A push
+  nobody registered a handler for is logged and dropped.
+- **Timeouts.** `request(..., timeout=...)` (default 30 seconds) raises
+  `TimeoutError` if no answer comes in time. If the answer turns up
+  later, it is logged and ignored.
+- **One speaker at a time.** Sends are queued behind a `Lock`, so the
+  attachment frames of one message never get mixed into another's. A
+  message is always sent whole, even if the task that sent it is
+  cancelled halfway through.
+
+## When Things Go Wrong
+
+Errors come back as an `error` message with body
+`{"code": ..., "message": ...}`, and `request()` raises
+`RemoteError` with `.code` and `.remote_message`:
+
+| Code | When |
+|------|------|
+| `unknown_method` | No handler is registered for the method |
+| `handler_error` | The handler raised (the exception is also reported to the loop) |
+| `bad_message` | The request broke the protocol but had a usable `id` |
+| `unsupported_version` | The request's `v` was not `1` |
+
+A handler can also `raise RemoteError("not_found", "no such job")` on
+purpose to send its own code. After any of these the connection keeps
+working. Broken frames with no usable `id` are reported to the loop and
+skipped; only framing errors (a truncated or oversized frame) end the
+connection. An incoming `ping` is answered with a `pong` straight away.
+
+## Hanging Up
+
+`await peer.close()` hangs up (calling it twice is fine). When a
+connection ends -- we close, they close, or the cable is cut -- the peer:
+
+1. stops reading and cancels running handlers,
+2. fails every waiting `request()` with `ConnectionClosedError` (at once,
+   not when its timeout runs out),
+3. runs every `on_close(callback)` exactly once with the cause: `None`
+   if we hung up, otherwise the error that ended the connection.
+
+## Try It
+
+`serve()` gives every new connection its own `Peer` (your `setup`
+registers its handlers) and `connect()` dials out:
+
+```python
+from pynet.errors import RemoteError
+from pynet.loop import Event, run, wait_for
+from pynet.messaging import Message, Peer, Reply, connect, serve
+
+
+async def main() -> None:
+    news = Event()
+
+    def setup_server(peer: Peer) -> None:
+        async def echo(msg: Message) -> Reply:
+            await peer.push("news", "someone called echo")
+            return Reply(msg.body, msg.attachments)
+
+        peer.on("echo", echo)
+
+    def setup_client(peer: Peer) -> None:
+        async def on_news(msg: Message) -> None:
+            print("push:", msg.body)
+            news.set()
+
+        peer.on("news", on_news)
+        peer.on_close(lambda cause: print("closed, cause:", cause))
+
+    server = await serve("127.0.0.1", 0, setup_server, heartbeat_interval=None)
+    client = await connect(
+        "127.0.0.1", server.port, setup=setup_client, heartbeat_interval=None
+    )
+    reply = await client.request("echo", {"x": 1}, attachments=[b"\x00\xff"])
+    print("reply:", reply.body, reply.attachments)
+    await wait_for(news.wait(), 1.0)
+    try:
+        await client.request("nope")
+    except RemoteError as error:
+        print("error:", error.code)
+    await client.close()
+    server.close()
+    await server.wait_closed()
+
+
+run(main())
+```
+
+Output (the push was sent before the response, so it arrives first):
+
+```
+push: someone called echo
+reply: {'x': 1} (b'\x00\xff',)
+error: unknown_method
+closed, cause: None
+```
+
+For a bigger example, `examples/chat_room.py` is a chat server that
+pushes every line to every member:
+
+```
+uv run python examples/chat_room.py
+```
+
 ## When to Use
 
 Any time two programs need to exchange named calls, answers and
@@ -79,8 +214,19 @@ notifications over one connection, optionally with binary payloads.
   (`unsupported_version`), unknown type, missing `id` or `method`, bad
   attachment count, NaN/Infinity.
 - The decoder is reusable after an error.
+- Over real sockets: request/response, replies with attachments, pushes
+  both ways, and a fast request overtaking a slow one on one connection.
+- `unknown_method`, `handler_error` (and the connection still works
+  afterwards), a handler's own `RemoteError`, `bad_message`,
+  `unsupported_version`, junk frames, stray responses, ping/pong.
+- A request timeout, with the late answer ignored.
+- Big concurrent sends never interleave, and a cancelled sender never
+  leaves half a message on the wire.
+- When the other side drops mid-request, the request fails with
+  `ConnectionClosedError` well within a second; `on_close` runs once with
+  the cause.
 
 ## Next Up
 
-Requests, responses and heartbeats over a live connection come next, built
-on top of this codec and [Framing](framing.md).
+Heartbeats: the peer will ping every few seconds and hang up when too many
+pongs go missing, so a silently dead connection is noticed quickly.
