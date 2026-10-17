@@ -30,6 +30,8 @@ type Handler = Callable[[StreamReader, StreamWriter], Awaitable[None]]
 
 HOST = "127.0.0.1"
 HOSTNAME = "localhost"
+IPV6_LOOPBACK = "::1"
+ALL_INTERFACES = ""
 ANY_PORT = 0
 SHORT = 0.05
 LONG = 2.0
@@ -123,6 +125,28 @@ class TestTcpStreams:
             return line
 
         assert _serve_and(_echo_line, client) == MESSAGE
+
+    def test_empty_host_listens_on_every_interface(self) -> None:
+        """Bind ``""`` to all interfaces, so IPv4 loopback reaches the server."""
+
+        async def main() -> tuple[bytes, set[socket.AddressFamily], bool]:
+            """Serve on ``""`` and connect to 127.0.0.1 (and ::1 when present)."""
+            async with await start_server(_echo_line, ALL_INTERFACES, ANY_PORT) as server:
+                reader, writer = await open_connection(HOST, server.port)
+                writer.write(MESSAGE)
+                line = await wait_for(reader.read_until(), LONG)
+                await _close(writer)
+                families = {sock.family for sock in server.sockets}
+                ports = {sock.getsockname()[1] for sock in server.sockets}
+                if socket.AF_INET6 in families:
+                    _, writer6 = await open_connection(IPV6_LOOPBACK, server.port)
+                    await _close(writer6)
+                return line, families, ports == {server.port}
+
+        line, families, same_port = run(main())
+        assert line == MESSAGE
+        assert socket.AF_INET in families
+        assert same_port
 
     def test_server_port_reports_bound_port(self) -> None:
         """Report the port the kernel chose for port 0."""
@@ -260,12 +284,13 @@ class TestTcpStreams:
         """Close an accepted socket whose setup fails, report it, keep accepting."""
         real_setup = streams_module._socket_streams
         broken: list[socket.socket] = []
+        server_port: list[int] = []
 
         def setup_once_broken(
             loop: EventLoop, sock: socket.socket
         ) -> tuple[StreamReader, StreamWriter]:
-            """Fail on the first accepted socket, then build streams as usual."""
-            if not broken:
+            """Fail on the first accepted (server-side) socket, then build streams as usual."""
+            if not broken and sock.getsockname()[1] in server_port:
                 broken.append(sock)
                 raise OSError(errno.EINVAL, os.strerror(errno.EINVAL))
             return real_setup(loop, sock)
@@ -276,6 +301,7 @@ class TestTcpStreams:
         async def client(server: Server) -> tuple[bytes, bytes]:
             """Connect twice: the first is dropped, the second is echoed."""
             get_running_loop().set_exception_handler(seen.append)
+            server_port.append(server.port)
             first_reader, first_writer = await open_connection(HOST, server.port)
             dropped = await first_reader.read()
             await _close(first_writer)

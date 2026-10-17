@@ -64,6 +64,12 @@ Some house rules:
   the buffer untouched.
 - **Servers.** `start_server(handler, host, port)` sets `SO_REUSEADDR`
   and runs each connection's `handler(reader, writer)` in its own task.
+  A building can have more than one front door: `host=""` (or `None`)
+  means "every interface", so the server listens on IPv4 `0.0.0.0` *and*,
+  if the machine has IPv6, on `::` -- one socket each, all on the same
+  port. A name such as `"localhost"` gets a socket for every address it
+  resolves to (`127.0.0.1` and `::1`). `Server.port` is the one shared
+  port and `Server.sockets` lists the listening sockets.
   If a handler raises, the error goes to the loop's error reporter, that
   connection is closed, and the server keeps accepting. `Server.close()`
   stops accepting; `wait_closed()` waits for the listening socket to
@@ -128,6 +134,8 @@ There is a complete echo server in `examples/echo_server.py`:
 ## What We Test
 
 - An echo server round-trips a line; port 0 reports the real port.
+- A server on `""` accepts a connection to `127.0.0.1` (and `::1` where
+  IPv6 exists), with every listening socket on the same port.
 - `read`, `read_exactly` and `read_until` (with a custom separator and
   a `limit`), including EOF behaviour and `IncompleteReadError.partial`.
 - A peer that never reads makes `drain()` wait (it times out), and a

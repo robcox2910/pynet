@@ -47,6 +47,7 @@ async def connected_pair(
     reader, writer = await open_connection(HOST, server.port)
     while not accepted:
         await wait_for(_tick(), LONG)
+    server.close()  # stop listening; the accepted connection carries on
     server_reader, server_writer = accepted[0]
     client = FramedConnection(reader, writer, max_frame_size=client_limit)
     peer = FramedConnection(server_reader, server_writer, max_frame_size=server_limit)

@@ -54,6 +54,7 @@ ACCEPT_ERROR_MESSAGE = "Error accepting a connection"
 SETUP_ERROR_MESSAGE = "Error setting up an accepted connection"
 ACCEPT_PAUSE = 0.1  # seconds to stop accepting after an accept error...
 ACCEPT_PAUSE_MAX = 1.0  # ...doubling each time it fails again, up to this
+MISSING_FAMILY_ERRORS = frozenset({errno.EAFNOSUPPORT, errno.EADDRNOTAVAIL, errno.EPROTONOSUPPORT})
 CLOSED_MESSAGE = "connection is closed"
 LOST_MESSAGE = "connection closed before the buffered data was sent"
 
@@ -584,6 +585,7 @@ async def open_connection(host: str, port: int) -> tuple[StreamReader, StreamWri
         sock.setblocking(False)
         try:
             await _connect(loop, sock, address)
+            return _socket_streams(loop, sock)
         except NetConnectionError as error:
             sock.close()
             last_error = error
@@ -591,74 +593,52 @@ async def open_connection(host: str, port: int) -> tuple[StreamReader, StreamWri
         except BaseException:
             sock.close()
             raise
-        return _socket_streams(loop, sock)
     message = f"Could not connect to {host}:{port}: {last_error}"
     raise NetConnectionError(message) from last_error
 
 
-class Server:
-    """Accept TCP connections and run a handler task for each one.
+class _Listener:
+    """One listening socket: accept callers and hand each to ``on_connection``.
 
-    ``close()`` stops accepting; connections already being handled carry
-    on. ``wait_closed()`` waits only for the listening socket to close,
-    not for handlers to finish.
-
-    Args:
-        loop: The loop to accept on.
-        sock: A bound, listening, non-blocking socket.
-        handler: The coroutine function to run for each connection.
-
+    If ``accept`` itself fails (for example ``EMFILE``: we are out of
+    file descriptors), the waiting caller stays in the kernel's queue, so
+    the socket would be "readable" again on every turn. Instead we stop
+    listening for a short pause (``ACCEPT_PAUSE``, doubling up to
+    ``ACCEPT_PAUSE_MAX`` while it keeps failing), report the error once,
+    then try again.
     """
 
-    def __init__(self, loop: EventLoop, sock: socket.socket, handler: Handler) -> None:
+    def __init__(
+        self,
+        loop: EventLoop,
+        sock: socket.socket,
+        on_connection: Callable[[StreamReader, StreamWriter], None],
+    ) -> None:
         """Start accepting on ``sock``."""
         self._loop = loop
-        self._sock = sock
-        self._handler = handler
-        self.port: int = sock.getsockname()[1]
+        self.sock = sock
+        self._on_connection = on_connection
         self._transport = _Transport(loop, sock.fileno(), sock=sock)
         self._pause = ACCEPT_PAUSE
         self._resume: TimerHandle | None = None
         loop.add_reader(sock.fileno(), self._on_acceptable)
 
     def close(self) -> None:
-        """Stop accepting and close the listening socket."""
+        """Stop accepting and close the socket."""
         if self._resume is not None:
             self._resume.cancel()
             self._resume = None
         self._transport.close()
 
     async def wait_closed(self) -> None:
-        """Wait until the listening socket has been closed."""
+        """Wait until the socket has been closed."""
         await self._transport.wait_closed()
 
-    async def __aenter__(self) -> Server:
-        """Return the server for ``async with``."""
-        return self
-
-    async def __aexit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc: BaseException | None,
-        tb: TracebackType | None,
-    ) -> None:
-        """Close the server and wait for the listening socket to close."""
-        self.close()
-        await self.wait_closed()
-
     def _on_acceptable(self) -> None:
-        """Accept waiting connections and start a handler task for each.
-
-        If ``accept`` itself fails (for example ``EMFILE``: we are out of
-        file descriptors), the waiting connection stays in the kernel's
-        queue, so the listener would be "readable" again on every turn.
-        Instead we stop listening for a short pause (``ACCEPT_PAUSE``,
-        doubling up to ``ACCEPT_PAUSE_MAX`` while it keeps failing),
-        report the error once, then try again.
-        """
+        """Accept waiting connections and pass each one on."""
         for _ in range(ACCEPT_BATCH):
             try:
-                conn, _address = self._sock.accept()
+                conn, _address = self.sock.accept()
             except BlockingIOError, InterruptedError:
                 return
             except OSError as error:
@@ -671,10 +651,10 @@ class Server:
                 conn.close()
                 self._loop.report_error(ErrorContext(SETUP_ERROR_MESSAGE, error))
                 continue
-            Task(self._serve(reader, writer), self._loop)
+            self._on_connection(reader, writer)
 
     def _pause_accepting(self, error: OSError) -> None:
-        """Stop watching the listener for a while after ``accept`` failed."""
+        """Stop watching the socket for a while after ``accept`` failed."""
         delay = self._pause
         self._pause = min(delay * 2, ACCEPT_PAUSE_MAX)
         self._loop.remove_reader(self._transport.fd)
@@ -683,10 +663,67 @@ class Server:
         self._loop.report_error(ErrorContext(message, error))
 
     def _resume_accepting(self) -> None:
-        """Watch the listener again after a pause, unless the server closed."""
+        """Watch the socket again after a pause, unless it has closed."""
         self._resume = None
         if not self._transport.closed:
             self._loop.add_reader(self._transport.fd, self._on_acceptable)
+
+
+class Server:
+    """Accept TCP connections and run a handler task for each one.
+
+    A server may listen on several sockets at once -- for example one for
+    IPv4 (``0.0.0.0``) and one for IPv6 (``::``) -- all on the same port.
+    ``close()`` stops accepting; connections already being handled carry
+    on. ``wait_closed()`` waits only for the listening sockets to close,
+    not for handlers to finish.
+
+    Args:
+        loop: The loop to accept on.
+        socks: Bound, listening, non-blocking sockets sharing one port.
+        handler: The coroutine function to run for each connection.
+
+    Attributes:
+        port: The port every listening socket is bound to.
+        sockets: The listening sockets.
+
+    """
+
+    def __init__(self, loop: EventLoop, socks: list[socket.socket], handler: Handler) -> None:
+        """Start accepting on every socket in ``socks``."""
+        self._loop = loop
+        self._handler = handler
+        self.sockets: list[socket.socket] = list(socks)
+        self.port: int = socks[0].getsockname()[1]
+        self._listeners = [_Listener(loop, sock, self._start_handler) for sock in socks]
+
+    def close(self) -> None:
+        """Stop accepting and close the listening sockets."""
+        for listener in self._listeners:
+            listener.close()
+
+    async def wait_closed(self) -> None:
+        """Wait until every listening socket has been closed."""
+        for listener in self._listeners:
+            await listener.wait_closed()
+
+    async def __aenter__(self) -> Server:
+        """Return the server for ``async with``."""
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        """Close the server and wait for the listening sockets to close."""
+        self.close()
+        await self.wait_closed()
+
+    def _start_handler(self, reader: StreamReader, writer: StreamWriter) -> None:
+        """Run the handler for a new connection in its own task."""
+        Task(self._serve(reader, writer), self._loop)
 
     async def _serve(self, reader: StreamReader, writer: StreamWriter) -> None:
         """Run the handler; report its exception; always close the connection."""
@@ -706,30 +743,98 @@ class Server:
             writer.close()
 
 
-async def start_server(handler: Handler, host: str, port: int) -> Server:
-    """Listen on ``host:port`` and run ``handler(reader, writer)`` per connection.
+async def _resolve_passive(host: str | None, port: int) -> list[_AddrInfo]:
+    """Return the addresses a server on ``host:port`` should listen on.
 
-    Port 0 lets the kernel choose; ``Server.port`` reports the real port.
-    ``SO_REUSEADDR`` is set so a restarted server can rebind at once.
+    ``""`` or None means every interface: usually ``0.0.0.0`` (IPv4) and
+    ``::`` (IPv6). Names are looked up with ``AI_PASSIVE`` on a helper
+    thread; duplicates are dropped.
 
     Raises:
         DNSError: If ``host`` cannot be resolved.
-        NetConnectionError: If the address cannot be bound.
 
     """
-    loop = get_running_loop()
-    family, kind, proto, address = (await _resolve(host, port))[0]
+    if host:
+        try:
+            ipaddress.ip_address(host)
+        except ValueError:
+            pass
+        else:
+            return await _resolve(host, port)
+    lookup = host or None
+    try:
+        infos = await run_in_thread(
+            socket.getaddrinfo, lookup, port, type=socket.SOCK_STREAM, flags=socket.AI_PASSIVE
+        )
+    except socket.gaierror as error:
+        message = f"Could not resolve {host!r}: {error}"
+        raise DNSError(message) from error
+    unique: dict[tuple[int, tuple[Any, ...]], _AddrInfo] = {}
+    for family, kind, proto, _, address in infos:
+        unique.setdefault((family, address), (family, kind, proto, address))
+    return list(unique.values())
+
+
+def _listen_socket(info: _AddrInfo, port: int) -> socket.socket:
+    """Create, bind and listen on one socket for ``info``, using ``port``.
+
+    Raises:
+        OSError: If the socket cannot be created or bound.
+
+    """
+    family, kind, proto, address = info
     sock = socket.socket(family, kind, proto)
     try:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.bind(address)
+        if family == socket.AF_INET6:
+            # Keep the IPv6 socket to IPv6, so an IPv4 socket can share the port.
+            sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+        sock.bind((address[0], port, *address[2:]))
         sock.listen(LISTEN_BACKLOG)
         sock.setblocking(False)
-    except OSError as error:
+    except BaseException:
         sock.close()
-        message = f"Could not listen on {host}:{port}: {error}"
-        raise NetConnectionError(message) from error
-    return Server(loop, sock, handler)
+        raise
+    return sock
+
+
+async def start_server(handler: Handler, host: str | None, port: int) -> Server:
+    """Listen on ``host:port`` and run ``handler(reader, writer)`` per connection.
+
+    ``host`` may be an IP address, a name (every address it resolves to
+    is bound), or ``""``/None for every interface (IPv4 ``0.0.0.0`` and,
+    where the machine has IPv6, ``::``). Port 0 lets the kernel choose;
+    every socket then shares the port it chose, and ``Server.port``
+    reports it. ``SO_REUSEADDR`` is set so a restarted server can rebind
+    at once.
+
+    Raises:
+        DNSError: If ``host`` cannot be resolved.
+        NetConnectionError: If the first address cannot be bound, or a
+            later one fails for any reason but "this machine has no such
+            address family".
+
+    """
+    loop = get_running_loop()
+    socks: list[socket.socket] = []
+    try:
+        for info in await _resolve_passive(host, port):
+            bound_port = socks[0].getsockname()[1] if socks else port
+            try:
+                socks.append(_listen_socket(info, bound_port))
+            except OSError as error:
+                if socks and error.errno in MISSING_FAMILY_ERRORS:
+                    continue  # e.g. no IPv6 here: the other addresses still serve
+                message = f"Could not listen on {host}:{port}: {error}"
+                raise NetConnectionError(message) from error
+    except BaseException:
+        for sock in socks:
+            sock.close()
+        raise
+    if not socks:
+        message = f"Could not listen on {host}:{port}: no usable address"
+        raise NetConnectionError(message)
+    return Server(loop, socks, handler)
 
 
 def pipe_reader(fd: int) -> StreamReader:
