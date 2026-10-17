@@ -9,8 +9,9 @@ from pathlib import Path
 
 import pytest
 
+from pynet import streams as streams_module
 from pynet.errors import ConnectionClosedError, NetConnectionError
-from pynet.loop import ErrorContext, Event, get_running_loop, run, sleep, spawn, wait_for
+from pynet.loop import ErrorContext, Event, EventLoop, get_running_loop, run, sleep, spawn, wait_for
 from pynet.loop.testing import FakeClock
 from pynet.streams import (
     DEFAULT_HIGH_WATER,
@@ -51,6 +52,10 @@ BACKPRESSURE_FACTOR = 4
 FIRST_CALL = 1
 UNKNOWN_KEY = "no-such-key"
 SENTINEL = "default"
+FAST_PAUSE = 0.02
+FAST_PAUSE_MAX = 0.08
+PAUSE_WINDOW = 0.2
+MAX_PAUSED_ACCEPTS = 8  # 0, .02, .06, .14 (+ slack): a spinning accept makes thousands
 EXAMPLE = Path(__file__).resolve().parent.parent / "examples" / "echo_server.py"
 
 
@@ -216,6 +221,73 @@ class TestTcpStreams:
 
         assert _serve_and(handler, client) == (b"", MESSAGE)
         assert [type(ctx.exception) for ctx in seen] == [BoomError]
+
+    def test_accept_errors_pause_the_listener(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Back off (not spin) while ``accept`` fails with EMFILE, then resume."""
+        monkeypatch.setattr(streams_module, "ACCEPT_PAUSE", FAST_PAUSE)
+        monkeypatch.setattr(streams_module, "ACCEPT_PAUSE_MAX", FAST_PAUSE_MAX)
+        real_accept = socket.socket.accept
+        out_of_fds = [True]
+        attempts: list[int] = []
+
+        def flaky_accept(sock: socket.socket) -> tuple[socket.socket, object]:
+            """Fail with EMFILE while ``out_of_fds`` is set."""
+            if out_of_fds:
+                attempts.append(1)
+                raise OSError(errno.EMFILE, os.strerror(errno.EMFILE))
+            return real_accept(sock)
+
+        monkeypatch.setattr(socket.socket, "accept", flaky_accept)
+        seen: list[ErrorContext] = []
+
+        async def client(server: Server) -> bytes:
+            """Connect while accepts fail, wait, then let them succeed."""
+            get_running_loop().set_exception_handler(seen.append)
+            reader, writer = await open_connection(HOST, server.port)
+            await sleep(PAUSE_WINDOW)
+            out_of_fds.clear()
+            writer.write(MESSAGE)
+            line = await reader.read_until()
+            await _close(writer)
+            return line
+
+        assert _serve_and(_echo_line, client) == MESSAGE
+        assert 0 < len(attempts) <= MAX_PAUSED_ACCEPTS
+        assert len(seen) == len(attempts)  # reported once per pause
+        assert all(isinstance(ctx.exception, OSError) for ctx in seen)
+
+    def test_failed_connection_setup_closes_it(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Close an accepted socket whose setup fails, report it, keep accepting."""
+        real_setup = streams_module._socket_streams
+        broken: list[socket.socket] = []
+
+        def setup_once_broken(
+            loop: EventLoop, sock: socket.socket
+        ) -> tuple[StreamReader, StreamWriter]:
+            """Fail on the first accepted socket, then build streams as usual."""
+            if not broken:
+                broken.append(sock)
+                raise OSError(errno.EINVAL, os.strerror(errno.EINVAL))
+            return real_setup(loop, sock)
+
+        monkeypatch.setattr(streams_module, "_socket_streams", setup_once_broken)
+        seen: list[ErrorContext] = []
+
+        async def client(server: Server) -> tuple[bytes, bytes]:
+            """Connect twice: the first is dropped, the second is echoed."""
+            get_running_loop().set_exception_handler(seen.append)
+            first_reader, first_writer = await open_connection(HOST, server.port)
+            dropped = await first_reader.read()
+            await _close(first_writer)
+            reader, writer = await open_connection(HOST, server.port)
+            writer.write(MESSAGE)
+            line = await reader.read_until()
+            await _close(writer)
+            return dropped, line
+
+        assert _serve_and(_echo_line, client) == (b"", MESSAGE)
+        assert broken[0].fileno() == -1  # closed, not leaked
+        assert [type(ctx.exception) for ctx in seen] == [OSError]
 
     def test_get_extra_info(self) -> None:
         """Report the peer and local addresses and the file descriptor."""

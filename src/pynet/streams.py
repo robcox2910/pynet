@@ -37,7 +37,7 @@ from typing import Any
 
 from pynet.errors import ConnectionClosedError, DNSError, NetConnectionError, PyNetError
 from pynet.loop.futures import Cancelled, Future
-from pynet.loop.reactor import ErrorContext, EventLoop
+from pynet.loop.reactor import ErrorContext, EventLoop, TimerHandle
 from pynet.loop.tasks import Task, get_running_loop
 from pynet.loop.threads import run_in_thread
 
@@ -51,6 +51,9 @@ ACCEPT_BATCH = 16
 CONNECT_IN_PROGRESS = frozenset({errno.EINPROGRESS, errno.EWOULDBLOCK, errno.EAGAIN})
 HANDLER_ERROR_MESSAGE = "Exception in connection handler"
 ACCEPT_ERROR_MESSAGE = "Error accepting a connection"
+SETUP_ERROR_MESSAGE = "Error setting up an accepted connection"
+ACCEPT_PAUSE = 0.1  # seconds to stop accepting after an accept error...
+ACCEPT_PAUSE_MAX = 1.0  # ...doubling each time it fails again, up to this
 CLOSED_MESSAGE = "connection is closed"
 LOST_MESSAGE = "connection closed before the buffered data was sent"
 
@@ -614,10 +617,15 @@ class Server:
         self._handler = handler
         self.port: int = sock.getsockname()[1]
         self._transport = _Transport(loop, sock.fileno(), sock=sock)
+        self._pause = ACCEPT_PAUSE
+        self._resume: TimerHandle | None = None
         loop.add_reader(sock.fileno(), self._on_acceptable)
 
     def close(self) -> None:
         """Stop accepting and close the listening socket."""
+        if self._resume is not None:
+            self._resume.cancel()
+            self._resume = None
         self._transport.close()
 
     async def wait_closed(self) -> None:
@@ -639,17 +647,46 @@ class Server:
         await self.wait_closed()
 
     def _on_acceptable(self) -> None:
-        """Accept waiting connections and start a handler task for each."""
+        """Accept waiting connections and start a handler task for each.
+
+        If ``accept`` itself fails (for example ``EMFILE``: we are out of
+        file descriptors), the waiting connection stays in the kernel's
+        queue, so the listener would be "readable" again on every turn.
+        Instead we stop listening for a short pause (``ACCEPT_PAUSE``,
+        doubling up to ``ACCEPT_PAUSE_MAX`` while it keeps failing),
+        report the error once, then try again.
+        """
         for _ in range(ACCEPT_BATCH):
             try:
                 conn, _address = self._sock.accept()
             except BlockingIOError, InterruptedError:
                 return
             except OSError as error:
-                self._loop.report_error(ErrorContext(ACCEPT_ERROR_MESSAGE, error))
+                self._pause_accepting(error)
                 return
-            reader, writer = _socket_streams(self._loop, conn)
+            self._pause = ACCEPT_PAUSE  # accepting works again
+            try:
+                reader, writer = _socket_streams(self._loop, conn)
+            except Exception as error:  # noqa: BLE001 -- reported, not swallowed
+                conn.close()
+                self._loop.report_error(ErrorContext(SETUP_ERROR_MESSAGE, error))
+                continue
             Task(self._serve(reader, writer), self._loop)
+
+    def _pause_accepting(self, error: OSError) -> None:
+        """Stop watching the listener for a while after ``accept`` failed."""
+        delay = self._pause
+        self._pause = min(delay * 2, ACCEPT_PAUSE_MAX)
+        self._loop.remove_reader(self._transport.fd)
+        self._resume = self._loop.call_later(delay, self._resume_accepting)
+        message = f"{ACCEPT_ERROR_MESSAGE}; pausing accepts for {delay:g}s"
+        self._loop.report_error(ErrorContext(message, error))
+
+    def _resume_accepting(self) -> None:
+        """Watch the listener again after a pause, unless the server closed."""
+        self._resume = None
+        if not self._transport.closed:
+            self._loop.add_reader(self._transport.fd, self._on_acceptable)
 
     async def _serve(self, reader: StreamReader, writer: StreamWriter) -> None:
         """Run the handler; report its exception; always close the connection."""

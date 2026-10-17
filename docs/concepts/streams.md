@@ -68,6 +68,16 @@ Some house rules:
   connection is closed, and the server keeps accepting. `Server.close()`
   stops accepting; `wait_closed()` waits for the listening socket to
   close (not for running handlers to finish).
+- **Out of file descriptors.** Every connection costs a file
+  descriptor, and a program only gets so many. When `accept` fails
+  (say with `EMFILE`, "too many open files"), the caller is still
+  waiting at the door -- so the doorbell would ring again on *every*
+  turn and the loop would spin. Instead the server stops listening for
+  a short pause (`ACCEPT_PAUSE`, 0.1 s, doubling each time it fails
+  again up to `ACCEPT_PAUSE_MAX`, 1 s), reports the error once per
+  pause, then opens the door again. If setting up an accepted
+  connection fails, that one socket is closed and reported, and the
+  server carries on with the next caller.
 - **Clients.** `open_connection(host, port)` uses IP addresses as they
   are, and looks names up with `getaddrinfo` on a helper thread
   (`run_in_thread`) so the loop never blocks. The connect itself is
@@ -127,6 +137,10 @@ There is a complete echo server in `examples/echo_server.py`:
   finds the reset, or `abort()` throws the bucket away mid-`drain()`.
 - A handler that raises is reported, its connection is closed, and the
   server accepts the next connection.
+- An `accept` that keeps failing with `EMFILE` pauses the listener
+  (a handful of tries in 0.2 s, not thousands), reports once per pause,
+  and the server accepts again once file descriptors are free; a
+  connection whose setup fails is closed, not leaked.
 - A read cancelled by a timeout removes its fd from the selector, and
   the next read on the same stream works.
 - Refused connections, a port already in use, a closed server, host-name
