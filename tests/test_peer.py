@@ -562,7 +562,7 @@ class TestClosing:
                 began = time.monotonic()
                 with pytest.raises(TimeoutError):
                     await wait_for(
-                        client.request("x", attachments=HUGE, timeout=TINY_TIMEOUT), SHORT
+                        client.request("x", attachments=HUGE, timeout=TINY_TIMEOUT), LONG
                     )
                 return time.monotonic() - began
             finally:
@@ -570,7 +570,7 @@ class TestClosing:
                 server.close()
                 await server.wait_closed()
 
-        assert run(main()) < SLOW  # about TINY_TIMEOUT, not the SHORT guard
+        assert run(main()) < SHORT  # about TINY_TIMEOUT, not the LONG guard
 
     def test_remote_drop_fails_stalled_send(self) -> None:
         """Fail a still-sending request when the stalled remote hangs up."""
