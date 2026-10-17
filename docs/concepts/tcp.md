@@ -41,6 +41,11 @@ print(conn.state)  # TCPState.ESTABLISHED
 - The three-way handshake establishes a connection.
 - Data is delivered in order.
 
+## See It for Real
+
+This page simulates TCP with plain objects. To open real, non-blocking
+TCP connections on our own event loop, see [Streams](streams.md).
+
 ## Next Up
 
 TCP is reliable but slow. What if speed matters more?

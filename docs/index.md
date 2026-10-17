@@ -60,8 +60,50 @@ and Python's `requests` library do under the hood.
 | **Ping (ICMP)** | Knocking on the door | Check if a host is reachable and measure RTT |
 | **Base64** | Encoding photos for email | Convert binary data to safe ASCII text |
 | **TLS** | Secret handshake | Negotiate encrypted connections with cipher suites |
+| **[Event Loop](concepts/event-loop.md)** | The waiter | Run callbacks and timers in one thread without spinning |
+| **[Tasks and Await](concepts/tasks-and-await.md)** | Bookmarks in recipes | Pause one coroutine, run another, resume exactly where it left off |
+| **[Cancellation and Timeouts](concepts/cancellation-and-timeouts.md)** | The referee's whistle | Stop a block when time runs out; gather many results at once |
+| **[Sync Primitives](concepts/sync-primitives.md)** | Pistol, conveyor belt, key, car park | Event, Queue, Lock and Semaphore for coordinating tasks |
+| **[Worker Threads](concepts/threads.md)** | Kitchen helper | Run blocking calls in threads without freezing the loop |
+| **[Streams](concepts/streams.md)** | Water pipes with a tap | Non-blocking TCP and pipe readers/writers with backpressure |
+| **[Subprocesses](concepts/subprocesses.md)** | Helpers and baby monitors | Run many commands at once, stream their output, notice exits, kill process groups |
+| **[Framing](concepts/framing.md)** | Envelopes with the page count on the front | Length-prefixed messages so the reader knows where each one ends |
+| **[Messaging](concepts/messaging.md)** | Walkie-talkies with call signs | Versioned message envelopes with ids, methods and binary attachments |
+| **[Heartbeats and Reconnect](concepts/heartbeats-and-reconnect.md)** | "Are you still there?" on the phone | Ping on a timer, hang up when pongs go missing, and redial with backoff and jitter |
+| **[Timers](concepts/timers.md)** | Kitchen timers | Run a callback later, in order, without a thread per timer |
+| **[The Self-Pipe Trick](concepts/self-pipe-trick.md)** | Tapping the waiter's shoulder | Wake a sleeping loop from another thread |
+| **[WebSocket, For Real](concepts/websocket-real.md)** | The phone call, for real | The RFC 6455 handshake, frames, and live connections |
+| **[Our Loop vs asyncio](concepts/our-loop-vs-asyncio.md)** | Go-kart vs factory car | Side-by-side names, and what asyncio adds |
+
+## Real Networking: The Learning Path
+
+The simulation pages above show *how* the protocols work. The pages
+below build the machinery to make them work for real, with a from-scratch
+event loop and real sockets. Read them in this order; each page ends
+with a "Next Up" link to the following one.
+
+| Step | Simulation page | Real page |
+|------|-----------------|-----------|
+| 1 | | [Event Loop](concepts/event-loop.md) |
+| 2 | | [Timers](concepts/timers.md) |
+| 3 | | [Tasks and Await](concepts/tasks-and-await.md) |
+| 4 | | [Cancellation and Timeouts](concepts/cancellation-and-timeouts.md) |
+| 5 | | [Sync Primitives](concepts/sync-primitives.md) |
+| 6 | | [Worker Threads](concepts/threads.md) |
+| 7 | | [The Self-Pipe Trick](concepts/self-pipe-trick.md) |
+| 8 | | [Subprocesses](concepts/subprocesses.md) |
+| 9 | [TCP](concepts/tcp.md) | [Streams](concepts/streams.md) |
+| 10 | | [Framing](concepts/framing.md) |
+| 11 | | [Messaging](concepts/messaging.md) |
+| 12 | | [Heartbeats and Reconnect](concepts/heartbeats-and-reconnect.md) |
+| 13 | [WebSocket](concepts/websocket.md) | [WebSocket, For Real](concepts/websocket-real.md) |
+| 14 | | [Our Loop vs asyncio](concepts/our-loop-vs-asyncio.md) |
+
+Runnable examples live in the `examples/` folder: an echo server, a job
+runner, a chat room, a heartbeat demo and a WebSocket echo server.
 
 ## Let's Start!
 
 Head to [URLs](concepts/urls.md) to learn how web addresses are
-built.
+built, or jump straight to the [Event Loop](concepts/event-loop.md) to
+start the real-networking path.

@@ -10,8 +10,6 @@ Ping is the simplest network diagnostic tool -- it tells you whether
 a host is reachable and how fast the connection is.
 """
 
-from __future__ import annotations
-
 from dataclasses import dataclass
 
 ECHO_REQUEST_TYPE = 8

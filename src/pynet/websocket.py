@@ -9,8 +9,6 @@ WebSocket connections start life as an HTTP request that asks the server
 to "upgrade" to the WebSocket protocol.
 """
 
-from __future__ import annotations
-
 from dataclasses import dataclass
 
 OPCODE_TEXT = 1

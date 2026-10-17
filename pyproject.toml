@@ -39,6 +39,7 @@ dev = [
     "pyright>=1.1.400",
     "commitizen>=4.4.0",
     "pip-audit>=2.10.0",
+    "pytest-timeout>=2.3.1",
 ]
 
 [build-system]
@@ -80,6 +81,7 @@ max-args = 9
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = ["S101", "SLF001", "S104"]
+"examples/**/*.py" = ["T201"]
 
 [tool.ruff.format]
 quote-style = "double"
@@ -96,6 +98,7 @@ addopts = [
     "--cov=src/pynet",
     "--cov-report=term-missing",
     "--cov-fail-under=80",
+    "--timeout=10",
 ]
 
 [tool.coverage.run]

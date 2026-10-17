@@ -11,11 +11,9 @@ input length is not a multiple of 3, the output is padded with '='.
 
 ``b64_encode`` accepts raw ``bytes`` (like the contents of a photo)
 *or* a text string for convenience. ``b64_decode`` in this from-scratch
-version turns Base64 back into a text string; recovering raw bytes for
-a photo round-trip is a great exercise to try yourself.
+version turns Base64 back into a text string, while ``b64_decode_bytes``
+recovers the raw bytes -- the photo comes back exactly as it left.
 """
-
-from __future__ import annotations
 
 _ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 _PAD = "="
@@ -25,6 +23,8 @@ BITS_PER_SEXTET = 6
 SEXTET_MASK = 0x3F
 INPUT_GROUP_SIZE = 3
 OUTPUT_GROUP_SIZE = 4
+MAX_PADDING = 2
+BYTE_MASK = 0xFF
 
 
 def b64_encode(data: bytes | str) -> str:
@@ -73,11 +73,57 @@ def b64_encode(data: bytes | str) -> str:
     return "".join(result)
 
 
+def b64_decode_bytes(encoded: str) -> bytes:
+    """Decode a Base64 string back to the raw bytes it came from.
+
+    Unlike ``b64_decode`` the result is never forced through UTF-8, so
+    binary data (a photo, a random key) survives the round trip. The
+    input must be strictly valid: a length that is a multiple of 4,
+    alphabet characters only, and at most two ``=`` signs, at the end.
+
+    Args:
+        encoded: The Base64-encoded string.
+
+    Returns:
+        The decoded bytes.
+
+    Raises:
+        ValueError: If the input has invalid characters, length or padding.
+
+    """
+    if not encoded:
+        return b""
+    if len(encoded) % OUTPUT_GROUP_SIZE:
+        msg = f"Invalid Base64 length: {len(encoded)} is not a multiple of 4"
+        raise ValueError(msg)
+
+    body = encoded.rstrip(_PAD)
+    pad_count = len(encoded) - len(body)
+    if pad_count > MAX_PADDING:
+        msg = f"Invalid Base64 padding: {pad_count} '=' signs"
+        raise ValueError(msg)
+
+    decode_map: dict[str, int] = {char: idx for idx, char in enumerate(_ALPHABET)}
+    result = bytearray()
+    bit_buffer = 0
+    bit_count = 0
+    for char in body:
+        if char not in decode_map:
+            msg = f"Invalid Base64 character: {char!r}"
+            raise ValueError(msg)
+        bit_buffer = (bit_buffer << BITS_PER_SEXTET) | decode_map[char]
+        bit_count += BITS_PER_SEXTET
+        if bit_count >= BITS_PER_BYTE:
+            bit_count -= BITS_PER_BYTE
+            result.append((bit_buffer >> bit_count) & BYTE_MASK)
+            bit_buffer &= (1 << bit_count) - 1
+    return bytes(result)
+
+
 def b64_decode(encoded: str) -> str:
     """Decode a Base64 string back to plain text.
 
-    Reverse the encoding process: map each Base64 character back to
-    its 6-bit value, reassemble into bytes, and strip padding.
+    Decode with ``b64_decode_bytes`` and read the bytes as UTF-8.
 
     Args:
         encoded: The Base64-encoded string.
@@ -86,48 +132,7 @@ def b64_decode(encoded: str) -> str:
         The decoded plain-text string.
 
     Raises:
-        ValueError: If the input contains invalid Base64 characters.
+        ValueError: If the input is not valid Base64 or not valid UTF-8.
 
     """
-    if not encoded:
-        return ""
-
-    # Build a reverse lookup table.
-    decode_map: dict[str, int] = {char: idx for idx, char in enumerate(_ALPHABET)}
-
-    # Process groups of 4 characters at a time, just like encode does 3 bytes.
-    result_bytes: list[int] = []
-
-    for i in range(0, len(encoded), OUTPUT_GROUP_SIZE):
-        group = encoded[i : i + OUTPUT_GROUP_SIZE]
-
-        # Count padding in this group.
-        pad_count = group.count(_PAD)
-
-        # Look up 6-bit values (treat padding as 0).
-        values: list[int] = []
-        for char in group:
-            if char == _PAD:
-                values.append(0)
-            elif char in decode_map:
-                values.append(decode_map[char])
-            else:
-                msg = f"Invalid Base64 character: {char!r}"
-                raise ValueError(msg)
-
-        # Combine four 6-bit values into a 24-bit number.
-        combined = 0
-        for val in values:
-            combined = (combined << BITS_PER_SEXTET) | val
-
-        # Extract 3 bytes from the 24-bit number.
-        bytes_to_extract = INPUT_GROUP_SIZE - pad_count
-        extracted: list[int] = []
-        for _ in range(INPUT_GROUP_SIZE):
-            extracted.append(combined & 0xFF)
-            combined >>= BITS_PER_BYTE
-        extracted.reverse()
-
-        result_bytes.extend(extracted[:bytes_to_extract])
-
-    return bytes(result_bytes).decode("utf-8")
+    return b64_decode_bytes(encoded).decode("utf-8")
