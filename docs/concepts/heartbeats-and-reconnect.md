@@ -30,9 +30,10 @@ Every [`Peer`](messaging.md) has a heartbeat, on both ends, by default:
   `pong` by the reader itself (not a handler task), echoing its `body`.
   Even a peer with `heartbeat_interval=None` still answers.
 - **Count the silence.** Each ping sent adds one to an "unanswered"
-  counter; any `pong` resets it to zero. Only pongs count -- other
-  messages arriving do not reset it. That keeps the rule simple: "I asked,
-  did they answer?"
+  counter. *Anything* that arrives from the other side -- a `pong`, but
+  also a request, a push, a response or their own `ping` -- resets it to
+  zero. The rule is: "Have I heard a peep from them lately?" A pong is
+  the usual peep, but any frame proves they are still there.
 - **Hang up.** At ping time, if more than `max_missed_pongs` pings in a
   row are unanswered, the peer closes with `HeartbeatTimeoutError` (a
   kind of `ConnectionClosedError`). A silent remote is therefore declared
@@ -72,10 +73,29 @@ anyway. A send that is stuck because the remote stopped reading does not
 stop the heartbeat either: each ping is sent from its own task, so the
 clock keeps ticking.
 
-One caution: messages go out one at a time, so a ping (and the other
-side's pong) waits behind any big message already being sent. A very
-large transfer over a slow link can take longer than the death time, and
-then a healthy but busy peer is declared dead -- for those, raise
+Why "any frame" and not "only pongs"? Messages go out one at a time,
+so our ping waits in the queue behind any big message already being
+sent. Picture a huge upload to a peer that reads it slowly: our pings
+cannot get out, so no pongs come back -- yet the peer is perfectly
+healthy. If only pongs counted, we would hang up on it. Because the
+other side heartbeats too (both ends do by default), its own pings keep
+arriving and keep our counter at zero.
+
+```
+   us (sending a huge message)               slow reader
+   t=0   [big message .......................>   reading slowly]
+   t=1   ping 2 stuck in the queue             <-- their ping   unanswered = 0
+   t=2   ping 3 stuck in the queue             <-- their ping   unanswered = 0
+   ...   still alive: we keep hearing from them
+```
+
+A remote that has frozen completely sends nothing at all, so it is
+still declared dead on time -- even while our big send is stuck.
+
+One caution remains. The *slow reader's* own pongs to us -- and its
+view of us -- depend on frames arriving whole. If a single frame takes
+longer than the death time to arrive (a giant frame on a crawling
+link), the other side may give up on us. For transfers like that, raise
 `heartbeat_interval` or send the data in smaller pieces.
 
 This is how a scheduler notices that an agent machine is gone: register
@@ -338,6 +358,8 @@ many 5-second intervals pass in milliseconds.
   `max_missed_pongs` is refused with `ValueError`.
 - A server that answers only every third ping keeps the connection alive
   well past the death time: each pong resets the count.
+- A send that holds our pings up for ten intervals does not kill a
+  healthy peer: the other side's own pings reset the count.
 - A silent server is declared dead after exactly
   `(max_missed_pongs + 1) * heartbeat_interval`: `on_close` sees a
   `HeartbeatTimeoutError`, and a waiting request fails with

@@ -20,9 +20,12 @@ caller can see:
   the peer sends a ``ping`` with no ``id`` -- so it can never be mistaken
   for a call -- and a sequence number as its ``body``. An incoming
   ``ping`` is answered with a ``pong`` straight from the reader, echoing
-  its ``id`` and ``body``. Each ``pong`` resets the count of unanswered
-  pings to zero (other traffic does not count: only a pong proves the
-  other end is still answering). When, at a ping time, more than
+  its ``id`` and ``body``. Every frame that arrives -- a ``pong``, but
+  also a request, a push or the other side's own ``ping`` -- resets the
+  count of unanswered pings to zero: it proves the other end is still
+  there. (Our pings can be stuck in the queue behind a big message the
+  remote is reading slowly; its own traffic keeps us from declaring it
+  dead meanwhile.) When, at a ping time, more than
   ``max_missed_pongs`` pings in a row have gone unanswered, the peer
   closes with ``HeartbeatTimeoutError``; a silent remote is therefore
   declared dead ``(max_missed_pongs + 1) * heartbeat_interval`` seconds
@@ -410,6 +413,7 @@ class Peer:
         try:
             while True:
                 frame = await self._conn.recv_frame()
+                self._unanswered = 0  # any frame at all: someone is still there
                 try:
                     msg = self._decoder.feed(frame)
                 except ProtocolError as error:
@@ -438,7 +442,7 @@ class Peer:
             case MessageType.PING:
                 self._track(self._send_quietly(Message(MessageType.PONG, msg.id, body=msg.body)))
             case MessageType.PONG:
-                self._unanswered = 0  # someone is still there
+                pass  # its frame already reset the missed count
 
     def _settle(self, msg: Message) -> None:
         """Hand a response or error to the request waiting for it."""

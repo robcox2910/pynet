@@ -1,4 +1,4 @@
-"""Test heartbeats: pings every interval, pongs reset the count, silence means dead.
+"""Test heartbeats: pings every interval, any frame resets the count, silence means dead.
 
 Time is fake (``FakeClock(autojump=True)``): the sockets are real, but
 whenever the loop has nothing to do it jumps straight to the next timer,
@@ -45,6 +45,23 @@ HUGE = [b"h" * 10_000_000] * 5
 # Fake seconds: generous, since autojump makes them free.
 FAKE_DEADLINE = 1000.0
 QUIET_SPELL = 10 * INTERVAL
+STRICT = 1  # missed pongs allowed on the busy sender
+LENIENT = 1000  # missed pongs allowed on the slow reader (its pongs queue behind the send)
+SLOW_SEND = 10 * INTERVAL  # far longer than (STRICT + 1) * INTERVAL
+BIG_FRAME = 1024
+BIG_ATTACHMENT = b"b" * BIG_FRAME
+
+
+class SlowConnection(FramedConnection):
+    """A framed connection whose big frames take ``SLOW_SEND`` fake seconds to go out."""
+
+    async def send_frame(self, payload: bytes) -> None:
+        """Dawdle before sending a big frame, as if the remote read it slowly."""
+        if len(payload) >= BIG_FRAME:
+            await sleep(SLOW_SEND)
+        await super().send_frame(payload)
+
+
 EXAMPLE = Path(__file__).resolve().parent.parent / "examples" / "heartbeat_demo.py"
 
 type RawHandler = Callable[[FramedConnection], Awaitable[None]]
@@ -282,6 +299,49 @@ class TestMissedPongs:
         assert isinstance(cause, ConnectionClosedError)
         assert request_cause is cause
         assert math.isclose(when - began, (MAX_MISSED + 1) * INTERVAL)
+
+    def test_long_send_does_not_kill_a_live_peer(self) -> None:
+        """Stay alive while a slow send holds up our pings, if the remote keeps talking."""
+        heard = Event()
+
+        def remote_setup(peer: Peer) -> None:
+            """Note the big push when it finally lands."""
+
+            async def big(_msg: Message) -> None:
+                """Wake the test."""
+                heard.set()
+
+            peer.on("big", big)
+
+        async def main() -> tuple[bool, float]:
+            """Push a slow message while both ends heartbeat."""
+            server = await serve(
+                HOST,
+                ANY_PORT,
+                remote_setup,
+                heartbeat_interval=INTERVAL,
+                max_missed_pongs=LENIENT,
+            )
+            reader, writer = await open_connection(HOST, server.port)
+            client = Peer(
+                SlowConnection(reader, writer),
+                heartbeat_interval=INTERVAL,
+                max_missed_pongs=STRICT,
+            )
+            client.start()
+            began = now()
+            try:
+                await wait_for(client.push("big", attachments=[BIG_ATTACHMENT]), FAKE_DEADLINE)
+                await wait_for(heard.wait(), FAKE_DEADLINE)
+                return client.closed, now() - began
+            finally:
+                await client.close()
+                server.close()
+                await server.wait_closed()
+
+        closed, elapsed = fake_run(main)
+        assert not closed
+        assert elapsed >= SLOW_SEND
 
     def test_stuck_send_does_not_stop_heartbeat(self) -> None:
         """Declare a remote that stopped reading dead even while a send is stuck."""
