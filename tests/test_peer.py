@@ -531,7 +531,7 @@ class TestClosing:
             server = await start_server(never_read, HOST, ANY_PORT)
             client = await connect(HOST, server.port, heartbeat_interval=None)
             try:
-                pending = spawn(client.request("x", attachments=HUGE, timeout=TINY_TIMEOUT))
+                pending = spawn(client.request("x", attachments=HUGE, timeout=None))
                 await sleep(TINY_TIMEOUT * 2)
                 stuck = not pending.done()
                 began = time.monotonic()
@@ -546,6 +546,31 @@ class TestClosing:
         elapsed, stuck = run(main())
         assert stuck
         assert elapsed < SHORT
+
+    def test_request_timeout_covers_a_stalled_send(self) -> None:
+        """Time out a request whose send is stuck behind a remote that never reads."""
+
+        async def never_read(_reader: StreamReader, _writer: StreamWriter) -> None:
+            """Accept the connection and ignore it."""
+            await sleep(LONG)
+
+        async def main() -> float:
+            """Send a huge request with a short timeout and no heartbeat."""
+            server = await start_server(never_read, HOST, ANY_PORT)
+            client = await connect(HOST, server.port, heartbeat_interval=None)
+            try:
+                began = time.monotonic()
+                with pytest.raises(TimeoutError):
+                    await wait_for(
+                        client.request("x", attachments=HUGE, timeout=TINY_TIMEOUT), SHORT
+                    )
+                return time.monotonic() - began
+            finally:
+                await wait_for(client.close(), SHORT)
+                server.close()
+                await server.wait_closed()
+
+        assert run(main()) < SLOW  # about TINY_TIMEOUT, not the SHORT guard
 
     def test_remote_drop_fails_stalled_send(self) -> None:
         """Fail a still-sending request when the stalled remote hangs up."""

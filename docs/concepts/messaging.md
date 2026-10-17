@@ -113,7 +113,11 @@ signs, and does the talking and listening for you.
 ```
 - **Timeouts.** `request(..., timeout=...)` (default 30 seconds) raises
   `TimeoutError` if no answer comes in time. If the answer turns up
-  later, it is logged and ignored.
+  later, it is logged and ignored. The clock starts when you call
+  `request`, and it covers *sending* the request too: if the other side
+  has stopped reading, a big request can sit in the queue forever, and
+  the timeout still fires on time. (The message is never left half-sent:
+  it goes out whole later, or not at all if the line closes.)
 - **One speaker at a time.** Sends are queued behind a `Lock`, so the
   attachment frames of one message never get mixed into another's. A
   message is always sent whole, even if the task that sent it is
@@ -245,7 +249,8 @@ notifications over one connection, optionally with binary payloads.
 - `unknown_method`, `handler_error` (and the connection still works
   afterwards), a handler's own `RemoteError`, `bad_message`,
   `unsupported_version`, junk frames, stray responses, ping/pong.
-- A request timeout, with the late answer ignored.
+- A request timeout, with the late answer ignored; a huge request to a
+  remote that never reads (no heartbeat) still times out on time.
 - Big concurrent sends never interleave, and a cancelled sender never
   leaves half a message on the wire.
 - An oversize attachment raises `FrameTooLargeError` with nothing sent,

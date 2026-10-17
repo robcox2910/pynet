@@ -53,7 +53,7 @@ from pynet.errors import (
     RemoteError,
 )
 from pynet.framing import FramedConnection
-from pynet.loop.control import wait_for
+from pynet.loop.control import timeout as time_limit
 from pynet.loop.futures import Cancelled, Future
 from pynet.loop.reactor import ErrorContext
 from pynet.loop.sync import Event, Lock
@@ -260,8 +260,9 @@ class Peer:
             method: The name of the remote handler.
             body: Any JSON-compatible value.
             attachments: Raw byte payloads to send with the request.
-            timeout: Seconds to wait for the answer, or ``None`` to wait
-                forever. It covers waiting for the answer, not sending.
+            timeout: Seconds to wait, or ``None`` to wait forever. One
+                deadline covers sending the request *and* waiting for the
+                answer, so a remote that stopped reading cannot hold us up.
 
         Returns:
             The ``response`` message.
@@ -277,8 +278,12 @@ class Peer:
         answer: Future[Message] = Future(get_running_loop())
         self._pending[msg_id] = answer
         try:
-            await self._send(Message(MessageType.REQUEST, msg_id, method, body, tuple(attachments)))
-            return await wait_for(answer, timeout)
+            # Cancelling ``_send`` is safe: the message still goes out whole.
+            async with time_limit(timeout):
+                await self._send(
+                    Message(MessageType.REQUEST, msg_id, method, body, tuple(attachments))
+                )
+                return await answer
         finally:
             self._pending.pop(msg_id, None)
             if answer.done() and not answer.cancelled():
