@@ -21,9 +21,9 @@ from pynet.ws.frames import (
     MASK_KEY_SIZE,
     MAX_CONTROL_PAYLOAD,
     Frame,
+    FrameReader,
     Opcode,
     encode_ws_frame,
-    read_ws_frame,
 )
 
 CLOSE_NORMAL = 1000
@@ -147,7 +147,7 @@ class WebSocket:
         max_message_size: int = DEFAULT_WS_MAX_MESSAGE,
     ) -> None:
         """Wrap streams whose handshake has already been done."""
-        self._reader = reader
+        self._frames = FrameReader(reader, expect_masked=not is_client)
         self._writer = writer
         self._is_client = is_client
         self._max_message_size = max_message_size
@@ -156,6 +156,11 @@ class WebSocket:
         self._receiving = False
         self._ended: WebSocketClosed | None = None
         self._done = Event()
+        # The message being reassembled, kept here (not in ``recv``'s
+        # locals) so a ``recv()`` cancelled between fragments loses nothing.
+        self._kind: Opcode | None = None
+        self._parts: list[bytes] = []
+        self._size = 0
 
     @property
     def closed(self) -> bool:
@@ -198,7 +203,9 @@ class WebSocket:
     async def recv(self) -> str | bytes:
         """Return the next whole message: ``str`` for TEXT, ``bytes`` for BINARY.
 
-        Pings are answered and pongs skipped along the way.
+        Pings are answered and pongs skipped along the way. Safe to
+        cancel (for example with ``wait_for``): a frame or a fragmented
+        message cut off by the timeout is finished by the next ``recv()``.
 
         Raises:
             WebSocketClosed: When a CLOSE arrives (after replying to it),
@@ -255,11 +262,8 @@ class WebSocket:
 
     async def _receive_message(self) -> str | bytes:
         """Read frames until one whole data message is complete."""
-        kind: Opcode | None = None
-        parts: list[bytes] = []
-        size = 0
         while True:
-            room = max(self._max_message_size - size, MAX_CONTROL_PAYLOAD)
+            room = max(self._max_message_size - self._size, MAX_CONTROL_PAYLOAD)
             frame = await self._read_frame(room)
             if frame.opcode is Opcode.CLOSE:
                 raise await self._on_close(frame.payload)
@@ -270,18 +274,20 @@ class WebSocket:
             if frame.opcode is Opcode.PONG:
                 continue
             if frame.opcode is Opcode.CONTINUATION:
-                if kind is None:
+                if self._kind is None:
                     raise _Failure(CLOSE_PROTOCOL_ERROR, "continuation with no message")
-            elif kind is not None:
+            elif self._kind is not None:
                 raise _Failure(CLOSE_PROTOCOL_ERROR, "new message before the last finished")
             else:
-                kind = frame.opcode
-            size += len(frame.payload)
-            if size > self._max_message_size:
+                self._kind = frame.opcode
+            self._size += len(frame.payload)
+            if self._size > self._max_message_size:
                 raise _Failure(CLOSE_TOO_BIG, "message too big")
-            parts.append(frame.payload)
+            self._parts.append(frame.payload)
             if frame.fin:
-                return self._assemble(kind, b"".join(parts))
+                kind, data = self._kind, b"".join(self._parts)
+                self._kind, self._parts, self._size = None, [], 0
+                return self._assemble(kind, data)
 
     @staticmethod
     def _assemble(kind: Opcode, data: bytes) -> str | bytes:
@@ -296,9 +302,7 @@ class WebSocket:
     async def _read_frame(self, max_payload: int) -> Frame:
         """Read one frame, turning stream and protocol errors into endings."""
         try:
-            return await read_ws_frame(
-                self._reader, max_payload=max_payload, expect_masked=not self._is_client
-            )
+            return await self._frames.read(max_payload)
         except FrameTooLargeError as error:
             raise _Failure(CLOSE_TOO_BIG, str(error)) from None
         except ProtocolError as error:

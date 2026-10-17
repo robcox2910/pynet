@@ -25,6 +25,8 @@ PARTIAL_BODY = b"hel"
 LENGTH_FORMAT = ">I"
 CLEAN_MESSAGE = "peer closed"
 BIG_UNSENT = 50_000_000
+SHORT_TIMEOUT = 0.05
+NEXT_BODY = b"abc"
 
 
 async def connected_pair(
@@ -122,6 +124,25 @@ class TestFramedConnection:
             return got
 
         assert run(scenario()) == BODY
+
+    def test_timeout_mid_frame_keeps_the_stream_in_step(self) -> None:
+        """Resume a frame whose body was cut off by a timeout, then read the next one."""
+        data = encode_frame(BODY) + encode_frame(NEXT_BODY)
+        cut = HEADER_SIZE + len(PARTIAL_BODY)
+
+        async def scenario() -> list[bytes]:
+            client, peer, writer, _ = await connected_pair()
+            writer.write(data[:cut])  # the header and the start of the body
+            await writer.drain()
+            with pytest.raises(TimeoutError):
+                await wait_for(peer.recv_frame(), SHORT_TIMEOUT)
+            writer.write(data[cut:])
+            await writer.drain()
+            got = [await wait_for(peer.recv_frame(), LONG) for _ in range(2)]
+            client.close()
+            return got
+
+        assert run(scenario()) == [BODY, NEXT_BODY]
 
     def test_empty_frame(self) -> None:
         """Round-trip a zero-length payload."""

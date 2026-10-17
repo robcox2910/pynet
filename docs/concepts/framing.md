@@ -69,6 +69,18 @@ run(main())
   `ConnectionClosedError("peer closed")`. Closing halfway through a
   frame raises `ConnectionClosedError` mentioning `mid-frame`. Calling
   `recv_frame()` again keeps raising it.
+- **Safe to time out.** `wait_for(conn.recv_frame(), 1.0)` may give up
+  after the 4-byte size has arrived but before the body has. The
+  connection keeps that size like a bookmark, so the next
+  `recv_frame()` reads the rest of *that* frame -- it never mistakes
+  body bytes for a new size and falls out of step.
+
+```
+  [00 00 00 05] [h e] ... timeout!      bookmark: "5 bytes, body pending"
+                [l l o] [00 00 00 03] [a b c]
+  next recv_frame() -> b"hello"      then -> b"abc"
+```
+
 - **One sender at a time.** `send_frame` is not safe for several tasks
   at once; share a connection by guarding sends with a `Lock`.
 
@@ -87,6 +99,8 @@ instead.)
 - Oversize payloads are refused when encoding and sending.
 - An oversize header closes the connection and never reads the body.
 - Clean EOF and EOF mid-frame (or mid-header) are told apart.
+- A `recv_frame()` that times out between the header and the body is
+  finished by the next call, and the frame after it still reads correctly.
 
 ## Next Up
 

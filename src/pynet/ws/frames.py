@@ -138,6 +138,96 @@ async def _read_length(reader: StreamReader, marker: int) -> int:
     return length
 
 
+class FrameReader:
+    """Read frames from one stream, safe to cancel in the middle of a frame.
+
+    A frame arrives in steps: two header bytes, maybe a longer length,
+    maybe a mask key, then the payload. If a timeout cancels the read
+    after some steps, the bytes those steps took are gone from the
+    stream. A ``FrameReader`` writes each finished step down, like a
+    bookmark, so the next ``read()`` carries on where the cancelled one
+    stopped instead of mistaking the middle of a frame for a new header.
+
+    Args:
+        reader: Where the bytes come from.
+        expect_masked: Whether the peer must mask (servers expect True,
+            clients False).
+
+    """
+
+    def __init__(self, reader: StreamReader, *, expect_masked: bool) -> None:
+        """Start reading frames from ``reader``."""
+        self._reader = reader
+        self._expect_masked = expect_masked
+        self._head: tuple[bool, Opcode, bool, int] | None = None  # fin, opcode, masked, marker
+        self._length: int | None = None
+        self._key: bytes | None = None
+
+    async def read(self, max_payload: int) -> Frame:
+        """Read and return one frame, unmasking the payload when needed.
+
+        The length is checked against ``max_payload`` before any payload
+        byte is read, so a lying header cannot make us buffer gigabytes.
+
+        Raises:
+            ProtocolError: For reserved bits, an unknown opcode, a bad
+                control frame, a non-minimal or invalid length, or masking
+                that does not match ``expect_masked``.
+            FrameTooLargeError: If the payload is over ``max_payload``.
+            ConnectionClosedError: If the stream ends before the frame does.
+
+        """
+        try:
+            return await self._read(max_payload)
+        except IncompleteReadError as error:
+            message = "connection closed in the middle of a frame"
+            raise ConnectionClosedError(message) from error
+
+    async def _read(self, max_payload: int) -> Frame:
+        """Do the work of ``read``, saving each finished step (may raise ``IncompleteReadError``)."""
+        if self._head is None:
+            first, second = await self._reader.read_exactly(2)
+            self._head = _parse_head(first, second, expect_masked=self._expect_masked)
+        fin, opcode, masked, marker = self._head
+        if self._length is None:
+            length = await _read_length(self._reader, marker)
+            if _is_control(opcode) and (length > MAX_CONTROL_PAYLOAD or not fin):
+                message = "control frames must be final and carry at most 125 bytes"
+                raise ProtocolError(message)
+            if length > max_payload:
+                raise FrameTooLargeError(length, max_payload)
+            self._length = length
+        if masked and self._key is None:
+            self._key = await self._reader.read_exactly(MASK_KEY_SIZE)
+        payload = await self._reader.read_exactly(self._length)
+        key = self._key
+        self._head = self._length = self._key = None  # the frame is complete
+        return Frame(fin, opcode, apply_mask(payload, key) if key is not None else payload)
+
+
+def _parse_head(first: int, second: int, *, expect_masked: bool) -> tuple[bool, Opcode, bool, int]:
+    """Check the two header bytes; return ``(fin, opcode, masked, length marker)``.
+
+    Raises:
+        ProtocolError: For reserved bits, an unknown opcode, or masking
+            that does not match ``expect_masked``.
+
+    """
+    if first & _RSV_BITS:
+        message = "reserved bits must be zero"
+        raise ProtocolError(message)
+    try:
+        opcode = Opcode(first & _OPCODE_MASK)
+    except ValueError:
+        message = f"unknown opcode {first & _OPCODE_MASK:#x}"
+        raise ProtocolError(message) from None
+    masked = bool(second & _MASK_BIT)
+    if masked != expect_masked:
+        message = "frame is masked but must not be" if masked else "frame must be masked"
+        raise ProtocolError(message)
+    return bool(first & _FIN_BIT), opcode, masked, second & _LENGTH_MASK
+
+
 async def read_ws_frame(
     reader: StreamReader,
     *,
@@ -146,8 +236,9 @@ async def read_ws_frame(
 ) -> Frame:
     """Read and return one frame, unmasking the payload when needed.
 
-    The length is checked against ``max_payload`` before any payload byte
-    is read, so a lying header cannot make us buffer gigabytes.
+    A one-off read: if it is cancelled halfway, the frame's first bytes
+    are lost. To read frame after frame with timeouts, keep one
+    ``FrameReader`` for the stream instead.
 
     Args:
         reader: Where the bytes come from.
@@ -163,35 +254,4 @@ async def read_ws_frame(
         ConnectionClosedError: If the stream ends before the frame does.
 
     """
-    try:
-        return await _read_frame(reader, max_payload, expect_masked)
-    except IncompleteReadError as error:
-        message = "connection closed in the middle of a frame"
-        raise ConnectionClosedError(message) from error
-
-
-async def _read_frame(reader: StreamReader, max_payload: int, expect_masked: bool) -> Frame:
-    """Do the work of ``read_ws_frame`` (may raise ``IncompleteReadError``)."""
-    first, second = await reader.read_exactly(2)
-    if first & _RSV_BITS:
-        message = "reserved bits must be zero"
-        raise ProtocolError(message)
-    try:
-        opcode = Opcode(first & _OPCODE_MASK)
-    except ValueError:
-        message = f"unknown opcode {first & _OPCODE_MASK:#x}"
-        raise ProtocolError(message) from None
-    fin = bool(first & _FIN_BIT)
-    masked = bool(second & _MASK_BIT)
-    if masked != expect_masked:
-        message = "frame is masked but must not be" if masked else "frame must be masked"
-        raise ProtocolError(message)
-    length = await _read_length(reader, second & _LENGTH_MASK)
-    if _is_control(opcode) and (length > MAX_CONTROL_PAYLOAD or not fin):
-        message = "control frames must be final and carry at most 125 bytes"
-        raise ProtocolError(message)
-    if length > max_payload:
-        raise FrameTooLargeError(length, max_payload)
-    key = await reader.read_exactly(MASK_KEY_SIZE) if masked else b""
-    payload = await reader.read_exactly(length)
-    return Frame(fin, opcode, apply_mask(payload, key) if masked else payload)
+    return await FrameReader(reader, expect_masked=expect_masked).read(max_payload)

@@ -66,8 +66,16 @@ WRONG_ACCEPT_RESPONSE = (
 )
 LONG_REASON = "r" * 124
 TICK = 0.01
+SHORT_TIMEOUT = 0.05
+HALF_FRAME = 3  # two header bytes and one mask-key byte
 OVERSIZE_HEAD = b"GET / HTTP/1.1\r\nX-Padding: " + b"p" * (16 * 1024 + 1)
 EXAMPLE = Path(__file__).resolve().parent.parent / "examples" / "ws_echo.py"
+
+
+async def _until(condition: Callable[[], bool]) -> None:
+    """Yield to the loop until ``condition()`` is true."""
+    while not condition():
+        await sleep(TICK)
 
 
 class Recorder:
@@ -192,6 +200,34 @@ class TestMessages:
             return await read_server_frame(reader)
 
         assert serve_and(client) == Frame(True, Opcode.TEXT, HELLO.encode())
+
+    def test_timeout_mid_message_keeps_fragments(self) -> None:
+        """Resume a fragmented message after ``recv()`` timed out halfway through it."""
+        results: list[str | bytes] = []
+        timed_out = Event()
+
+        async def handler(ws: WebSocket) -> None:
+            """Time out once mid-message, then receive the whole message."""
+            with pytest.raises(TimeoutError):
+                await wait_for(ws.recv(), SHORT_TIMEOUT)
+            timed_out.set()
+            results.append(await wait_for(ws.recv(), LONG))
+
+        async def main() -> list[str | bytes]:
+            """Send one fragment and half the next, wait out the timeout, send the rest."""
+            async with await serve_websocket(handler, HOST, ANY_PORT) as server:
+                _reader, writer = await raw_dial(server.port)
+                send_raw(writer, Frame(False, Opcode.TEXT, HEL))
+                key = os.urandom(MASK_KEY_SIZE)
+                tail = encode_ws_frame(Frame(True, Opcode.CONTINUATION, LO), mask_key=key)
+                writer.write(tail[:HALF_FRAME])
+                await wait_for(timed_out.wait(), LONG)
+                writer.write(tail[HALF_FRAME:])
+                await wait_for(_until(lambda: bool(results)), LONG)
+                writer.abort()
+                return results
+
+        assert run(main()) == [HELLO]
 
     def test_control_frame_between_fragments(self) -> None:
         """Answer a ping that arrives in the middle of a fragmented message."""

@@ -17,6 +17,10 @@ Rules worth knowing:
 - The peer closing exactly between frames is a polite goodbye; closing
   halfway through a frame is a truncated message. Both raise
   ``ConnectionClosedError`` (the second says "mid-frame").
+- ``recv_frame`` is safe to cancel (for example by a timeout). If the
+  header has arrived but the body has not, the connection remembers the
+  size it read, so the next ``recv_frame`` carries on with the body
+  instead of mistaking body bytes for a new header.
 - ``send_frame`` is not safe to call from several tasks at once: a frame
   that needs several writes could be interleaved with another. Callers
   that share a connection must serialise senders, for example with a
@@ -76,6 +80,7 @@ class FramedConnection:
         self._writer = writer
         self._max_frame_size = max_frame_size
         self._error: ConnectionClosedError | None = None
+        self._pending: tuple[bytes, int] | None = None  # (header, size) awaiting a body
 
     @property
     def writer(self) -> StreamWriter:
@@ -107,8 +112,9 @@ class FramedConnection:
     async def recv_frame(self) -> bytes:
         """Read one whole frame and return its payload.
 
-        Safe to call again after the connection closed: it keeps raising
-        ``ConnectionClosedError``.
+        Safe to cancel: a frame cut off by a timeout is finished by the
+        next call. Safe to call again after the connection closed: it
+        keeps raising ``ConnectionClosedError``.
 
         Returns:
             The payload (possibly empty).
@@ -122,21 +128,29 @@ class FramedConnection:
         """
         if self._error is not None:
             raise self._error
-        try:
-            header = await self._reader.read_exactly(HEADER_SIZE)
-        except IncompleteReadError as error:
-            raise self._remember(error.partial) from error
-        (size,) = struct.unpack(HEADER_FORMAT, header)
-        if size > self._max_frame_size:
-            self._writer.abort()
-            self._error = ConnectionClosedError(f"connection aborted: frame of {size} bytes")
-            raise FrameTooLargeError(size, self._max_frame_size)
+        if self._pending is None:
+            try:
+                header = await self._reader.read_exactly(HEADER_SIZE)
+            except IncompleteReadError as error:
+                raise self._remember(error.partial) from error
+            (size,) = struct.unpack(HEADER_FORMAT, header)
+            if size > self._max_frame_size:
+                self._writer.abort()
+                self._error = ConnectionClosedError(f"connection aborted: frame of {size} bytes")
+                raise FrameTooLargeError(size, self._max_frame_size)
+            # Remember the header: if we are cancelled while waiting for
+            # the body, the next call must carry on with this frame.
+            self._pending = (header, size)
+        header, size = self._pending
         if size == 0:
+            self._pending = None
             return b""
         try:
-            return await self._reader.read_exactly(size)
+            payload = await self._reader.read_exactly(size)
         except IncompleteReadError as error:
             raise self._remember(error.partial or header) from error
+        self._pending = None
+        return payload
 
     def _remember(self, partial: bytes) -> ConnectionClosedError:
         """Record and return the error for an EOF after ``partial`` bytes."""

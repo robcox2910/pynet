@@ -158,6 +158,13 @@ Frame(fin=True, opcode=<Opcode.TEXT: 1>, payload=b'Hello')
 reading a single payload byte (`FrameTooLargeError`), and a stream that
 ends mid-frame raises `ConnectionClosedError`.
 
+`read_ws_frame` is a one-off read. A frame arrives in steps (header,
+length, mask key, payload), and if a timeout cancels the read halfway,
+the steps already done are lost. For reading frame after frame, keep a
+`FrameReader(reader, expect_masked=...)`: each `await frames.read(max_payload)`
+writes every finished step down, so a read cut off by a timeout is
+picked up by the next one.
+
 ## Talking: A Real Conversation
 
 With the line open and envelopes in hand, `pynet.ws.WebSocket` holds
@@ -167,7 +174,9 @@ for text, `bytes` for binary. Behind the scenes it:
 
 - **Glues fragments together.** A long message may arrive in pieces
   (`TEXT` with FIN=0, then `CONTINUATION` frames until FIN=1). You only
-  ever see the finished message.
+  ever see the finished message. The pieces collected so far live on
+  the `WebSocket` itself, so `wait_for(ws.recv(), 1.0)` can time out in
+  the middle of a message and the next `recv()` still gets all of it.
 - **Answers "are you there?"** A `PING` is answered with a `PONG`
   carrying the same bytes, even between fragments. Pongs we receive are
   skipped.
@@ -314,6 +323,8 @@ the rest.
 
 - Text and binary messages echo back; the example server echoes both.
 - A `TEXT` fin=0 + `CONTINUATION` fin=1 pair is reassembled, even with a ping between.
+- A `recv()` that times out after one fragment and half of the next
+  frame is finished by the next `recv()`, which returns the whole message.
 - Pings are answered with matching pongs; pongs are skipped.
 - Closing with 1000 "bye" reaches the server exactly; codes are echoed;
   an empty CLOSE is 1005; a 1-byte CLOSE or reserved code is 1002.
