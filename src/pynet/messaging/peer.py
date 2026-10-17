@@ -43,6 +43,7 @@ import inspect
 import itertools
 import json
 import logging
+import math
 from collections import deque
 from collections.abc import Awaitable, Callable, Coroutine, Sequence
 from dataclasses import dataclass
@@ -171,8 +172,8 @@ class Peer:
             ``HeartbeatTimeoutError``.
 
     Raises:
-        ValueError: If ``heartbeat_interval`` is not above zero, or
-            ``max_missed_pongs`` is negative.
+        ValueError: If ``heartbeat_interval`` is not a finite number above
+            zero, or ``max_missed_pongs`` is negative or a ``bool``.
 
     """
 
@@ -184,11 +185,17 @@ class Peer:
         max_missed_pongs: int = DEFAULT_MAX_MISSED_PONGS,
     ) -> None:
         """Wrap ``conn``; nothing is read until ``start`` is called."""
-        if heartbeat_interval is not None and heartbeat_interval <= 0:
-            message = f"heartbeat_interval must be above zero, not {heartbeat_interval}"
+        if heartbeat_interval is not None and not (
+            math.isfinite(heartbeat_interval) and heartbeat_interval > 0
+        ):
+            message = (
+                f"heartbeat_interval must be a finite number above zero, not {heartbeat_interval}"
+            )
             raise ValueError(message)
-        if max_missed_pongs < 0:
-            message = f"max_missed_pongs must not be negative, not {max_missed_pongs}"
+        if isinstance(max_missed_pongs, bool) or max_missed_pongs < 0:
+            message = (
+                f"max_missed_pongs must be a whole number of at least 0, not {max_missed_pongs}"
+            )
             raise ValueError(message)
         self._conn = conn
         self._heartbeat_interval = heartbeat_interval

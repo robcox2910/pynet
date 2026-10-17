@@ -203,7 +203,7 @@ class TestSendingPings:
         assert seen == []
 
     def test_bad_settings_are_refused(self) -> None:
-        """Refuse a non-positive interval or a negative missed-pong limit."""
+        """Refuse a non-positive or non-finite interval, and a negative or bool limit."""
 
         async def main() -> None:
             """Build peers with bad heartbeat settings."""
@@ -215,6 +215,12 @@ class TestSendingPings:
                     Peer(conn, heartbeat_interval=0)
                 with pytest.raises(ValueError, match="max_missed_pongs"):
                     Peer(conn, max_missed_pongs=-1)
+                with pytest.raises(ValueError, match="heartbeat_interval"):
+                    Peer(conn, heartbeat_interval=math.nan)
+                with pytest.raises(ValueError, match="heartbeat_interval"):
+                    Peer(conn, heartbeat_interval=math.inf)
+                with pytest.raises(ValueError, match="max_missed_pongs"):
+                    Peer(conn, max_missed_pongs=True)
             finally:
                 conn.abort()
                 server.close()

@@ -247,6 +247,26 @@ class TestErrors:
 
         assert [r.getMessage() for r in caplog.records] == ["boom"]
 
+    def test_failing_handler_falls_back_to_logging(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Log both errors, and keep the loop running, when the handler itself raises."""
+        loop = EventLoop()
+        fired: list[str] = []
+
+        def broken_handler(_ctx: ErrorContext) -> None:
+            """Fail while handling an error."""
+            raise KeyError
+
+        loop.set_exception_handler(broken_handler)
+        loop.call_soon(lambda: 1 / 0)
+        loop.call_soon(lambda: fired.append("next"))
+
+        with caplog.at_level(logging.ERROR, logger="pynet.loop"):
+            loop.run_once()
+
+        logged = [r.exc_info[1] for r in caplog.records if r.exc_info is not None]
+        assert [type(error) for error in logged] == [ZeroDivisionError, KeyError]
+        assert fired == ["next"]
+
 
 class TestLifecycle:
     """Test run_forever, stop and close."""

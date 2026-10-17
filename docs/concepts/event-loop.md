@@ -33,7 +33,9 @@ effort.
 - Jobs added *during* a turn wait for the next turn, so one busy job
   cannot starve the rest.
 - If a job fails, the loop reports the error (to your handler, or to the
-  `pynet.loop` logger) and carries on with the next job.
+  `pynet.loop` logger) and carries on with the next job. If your handler
+  itself breaks while reporting, both errors go to the logger instead --
+  a broken handler never stops the loop.
 - With nothing to do, the waiter waits -- `next_timeout()` returns `None`
   ("wait as long as it takes") instead of busy-looping.
 
@@ -58,7 +60,8 @@ timeouts, messages) but you want a single thread and no locks.
 
 - Callbacks run in the order they were scheduled.
 - Jobs added mid-turn wait for the next turn.
-- Errors are reported and never stop the loop.
+- Errors are reported and never stop the loop -- even when the custom
+  exception handler raises (both errors are then logged).
 - `next_timeout()` is `None` when idle, `0` when work is ready.
 - Scheduling on a closed loop raises `RuntimeError`.
 

@@ -31,6 +31,7 @@ _thread_state = threading.local()
 
 WAKEUP_BYTE = b"x"
 DRAIN_SIZE = 4096
+HANDLER_FAILED_MESSAGE = "Exception in the loop's exception handler"
 AUTOJUMP_GRACE = 0.01  # real seconds an autojump clock waits for I/O before jumping
 
 
@@ -375,11 +376,21 @@ class EventLoop:
         self._exception_handler = handler
 
     def report_error(self, ctx: ErrorContext) -> None:
-        """Send ``ctx`` to the exception handler, or log it at ERROR."""
-        if self._exception_handler is None:
+        """Send ``ctx`` to the exception handler, or log it at ERROR.
+
+        If the handler itself raises, both the original error and the
+        handler's own are logged instead, so a broken handler can never
+        stop the loop or hide an error.
+        """
+        handler = self._exception_handler
+        if handler is None:
             logger.error(ctx.message, exc_info=ctx.exception)
-        else:
-            self._exception_handler(ctx)
+            return
+        try:
+            handler(ctx)
+        except Exception:
+            logger.error(ctx.message, exc_info=ctx.exception)  # noqa: TRY400 -- the original error
+            logger.exception(HANDLER_FAILED_MESSAGE)
 
     # The task registry. ``pynet.loop.tasks`` keeps its bookkeeping here so
     # every loop (and so every thread) has its own; everyday code should

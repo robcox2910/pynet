@@ -354,8 +354,9 @@ many 5-second intervals pass in milliseconds.
 - Pings go out at once and then exactly every `heartbeat_interval`, with
   no `id` and a counting body; both `connect()` and `serve()` peers ping
   by default.
-- `heartbeat_interval=None` sends no pings; a zero interval or a negative
-  `max_missed_pongs` is refused with `ValueError`.
+- `heartbeat_interval=None` sends no pings; a zero, NaN or infinite
+  interval, or a negative (or `True`/`False`) `max_missed_pongs`, is
+  refused with `ValueError`.
 - A server that answers only every third ping keeps the connection alive
   well past the death time: each pong resets the count.
 - A send that holds our pings up for ten intervals does not kill a
