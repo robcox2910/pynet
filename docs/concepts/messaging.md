@@ -122,9 +122,11 @@ Errors come back as an `error` message with body
 
 A handler can also `raise RemoteError("not_found", "no such job")` on
 purpose to send its own code. After any of these the connection keeps
-working. Broken frames with no usable `id` are reported to the loop and
-skipped; only framing errors (a truncated or oversized frame) end the
-connection. An incoming `ping` is answered with a `pong` straight away.
+working. Other broken frames -- no usable `id`, or a type other than
+`request` (a broken push, ping or pong is never answered) -- are
+reported to the loop and skipped; only framing errors (a truncated or
+oversized frame) end the connection. An incoming `ping` is answered with
+a `pong` straight away.
 
 ## Hanging Up
 
@@ -240,5 +242,6 @@ notifications over one connection, optionally with binary payloads.
 
 ## Next Up
 
-Heartbeats: the peer will ping every few seconds and hang up when too many
-pongs go missing, so a silently dead connection is noticed quickly.
+[Heartbeats and Reconnect](heartbeats-and-reconnect.md): the peer pings
+every few seconds and hangs up when too many pongs go missing, so a
+silently dead connection is noticed quickly.

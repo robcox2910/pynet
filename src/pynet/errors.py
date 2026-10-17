@@ -29,6 +29,14 @@ class ConnectionClosedError(NetConnectionError):
     """Raise when a connection has been closed or reset and cannot be used."""
 
 
+class HeartbeatTimeoutError(ConnectionClosedError):
+    """Raise when the other end stops answering heartbeat pings.
+
+    It is the cause a ``Peer`` closes with when too many pings in a row
+    go without a ``pong``: the line may look open, but nobody is there.
+    """
+
+
 class FrameTooLargeError(PyNetError):
     """Raise when a frame's length is over the allowed maximum.
 

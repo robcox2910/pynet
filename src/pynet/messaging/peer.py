@@ -8,13 +8,24 @@ turns every failure into something the caller can see:
 - A request for a method nobody registered gets an ``error`` reply with
   code ``unknown_method``; a handler that raises gets ``handler_error``
   (and the exception is reported to the loop). The connection carries on.
-- A frame that breaks the protocol gets an ``error`` reply when it looks
-  like a request with a usable ``id`` (``bad_message`` or
-  ``unsupported_version``); otherwise it is reported. Either way the
-  connection stays open. Only framing errors (a truncated or oversized
-  frame) end it.
-- An incoming ``ping`` is answered with a ``pong`` carrying the same
-  ``id`` and ``body``. Sending pings is the heartbeat's job (next task).
+- A frame that breaks the protocol gets an ``error`` reply only when its
+  ``type`` is ``request`` and it has a usable integer ``id``
+  (``bad_message`` or ``unsupported_version``); anything else -- a broken
+  push, ping, pong, response or a frame with no readable type -- is
+  reported instead, so a reply never lands on an id the sender did not
+  use for a call. Either way the connection stays open. Only framing
+  errors (a truncated or oversized frame) end it.
+- The heartbeat: every ``heartbeat_interval`` seconds (starting at once)
+  the peer sends a ``ping`` with no ``id`` -- so it can never be mistaken
+  for a call -- and a sequence number as its ``body``. An incoming
+  ``ping`` is answered with a ``pong`` straight from the reader, echoing
+  its ``id`` and ``body``. Each ``pong`` resets the count of unanswered
+  pings to zero (other traffic does not count: only a pong proves the
+  other end is still answering). When, at a ping time, more than
+  ``max_missed_pongs`` pings in a row have gone unanswered, the peer
+  closes with ``HeartbeatTimeoutError``; a silent remote is therefore
+  declared dead ``(max_missed_pongs + 1) * heartbeat_interval`` seconds
+  after the first ping.
 - Every message goes out whole or not at all: frames over the size limit
   are refused before anything is written.
 - When the connection ends -- either side closes, or the socket dies --
@@ -32,13 +43,19 @@ from collections.abc import Awaitable, Callable, Coroutine, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from pynet.errors import ConnectionClosedError, FrameTooLargeError, ProtocolError, RemoteError
+from pynet.errors import (
+    ConnectionClosedError,
+    FrameTooLargeError,
+    HeartbeatTimeoutError,
+    ProtocolError,
+    RemoteError,
+)
 from pynet.framing import FramedConnection
 from pynet.loop.control import wait_for
 from pynet.loop.futures import Cancelled, Future
 from pynet.loop.reactor import ErrorContext
 from pynet.loop.sync import Event, Lock
-from pynet.loop.tasks import Task, current_task, get_running_loop, spawn
+from pynet.loop.tasks import Task, current_task, get_running_loop, sleep, spawn
 from pynet.messaging.codec import (
     KIND_JSON,
     KIND_SIZE,
@@ -57,6 +74,7 @@ DEFAULT_REQUEST_TIMEOUT = 30.0
 DEFAULT_HEARTBEAT_INTERVAL = 5.0
 DEFAULT_MAX_MISSED_PONGS = 3
 FIRST_REQUEST_ID = 1
+FIRST_PING = 1
 
 UNKNOWN_METHOD = "unknown_method"
 HANDLER_ERROR = "handler_error"
@@ -72,11 +90,6 @@ HANDLER_ERROR_MESSAGE = "Exception in message handler"
 CLOSE_CALLBACK_MESSAGE = "Exception in on_close callback"
 PROTOCOL_ERROR_MESSAGE = "Protocol error"
 READER_ERROR_MESSAGE = "Unexpected error reading messages"
-
-# Replies of these types answer *our* calls, so their ids are in our
-# numbering. Answering a broken one with an error would put an id from
-# our own numbering back on the wire and could fail an unrelated call.
-_NEVER_ANSWERED = frozenset({MessageType.RESPONSE, MessageType.ERROR, MessageType.PONG})
 
 
 @dataclass(frozen=True)
@@ -114,8 +127,11 @@ def _remote_error(body: JsonValue) -> RemoteError:
 def _answerable(frame: bytes) -> tuple[int, str] | None:
     """Return ``(id, code)`` for an error reply to a bad frame, or ``None``.
 
-    Only a JSON envelope with an integer ``id`` that is not itself a reply
-    can be answered.
+    Only a JSON envelope whose ``type`` is ``request`` and whose ``id`` is
+    an integer can be answered: that id is one the sender picked for a
+    call and is waiting on. Any other broken frame (a push, ping, pong,
+    response, error, or one whose type cannot be read) is never answered,
+    because an error with its id could fail an unrelated call.
     """
     if frame[:KIND_SIZE] != KIND_JSON:
         return None
@@ -128,7 +144,7 @@ def _answerable(frame: bytes) -> tuple[int, str] | None:
     msg_id = data.get("id")
     if not isinstance(msg_id, int) or isinstance(msg_id, bool):
         return None
-    if data.get("type") in _NEVER_ANSWERED:
+    if data.get("type") != MessageType.REQUEST.value:
         return None
     code = UNSUPPORTED_VERSION if data.get("v") != PROTOCOL_VERSION else BAD_MESSAGE
     return msg_id, code
@@ -144,10 +160,14 @@ class Peer:
     Args:
         conn: The framed connection to talk over.
         heartbeat_interval: Seconds between heartbeat pings, or ``None``
-            for no heartbeat. Stored now; the heartbeat itself comes in a
-            later task.
-        max_missed_pongs: How many unanswered pings mean the other end is
-            gone. Stored now, like ``heartbeat_interval``.
+            to send none (incoming pings are still answered).
+        max_missed_pongs: How many pings in a row may go unanswered; one
+            more than this and the peer closes with
+            ``HeartbeatTimeoutError``.
+
+    Raises:
+        ValueError: If ``heartbeat_interval`` is not above zero, or
+            ``max_missed_pongs`` is negative.
 
     """
 
@@ -159,6 +179,12 @@ class Peer:
         max_missed_pongs: int = DEFAULT_MAX_MISSED_PONGS,
     ) -> None:
         """Wrap ``conn``; nothing is read until ``start`` is called."""
+        if heartbeat_interval is not None and heartbeat_interval <= 0:
+            message = f"heartbeat_interval must be above zero, not {heartbeat_interval}"
+            raise ValueError(message)
+        if max_missed_pongs < 0:
+            message = f"max_missed_pongs must not be negative, not {max_missed_pongs}"
+            raise ValueError(message)
         self._conn = conn
         self._heartbeat_interval = heartbeat_interval
         self._max_missed_pongs = max_missed_pongs
@@ -169,6 +195,8 @@ class Peer:
         self._send_lock = Lock()
         self._sends: set[Future[None]] = set()
         self._reader: Task[None] | None = None
+        self._heartbeat: Task[None] | None = None
+        self._unanswered = 0
         self._tasks: set[Task[None]] = set()
         self._close_callbacks: list[CloseCallback] = []
         self._closed = False
@@ -204,9 +232,15 @@ class Peer:
             self._close_callbacks.append(cb)
 
     def start(self) -> None:
-        """Start the reader task (call once, after registering handlers)."""
-        if self._reader is None and not self._closed:
-            self._reader = spawn(self._read_loop(), name=f"peer-reader-{self.peername}")
+        """Start reading, and the heartbeat if one is set (call once, after setup)."""
+        if self._reader is not None or self._closed:
+            return
+        self._reader = spawn(self._read_loop(), name=f"peer-reader-{self.peername}")
+        if self._heartbeat_interval is not None:
+            self._heartbeat = spawn(
+                self._heartbeat_loop(self._heartbeat_interval),
+                name=f"peer-heartbeat-{self.peername}",
+            )
 
     async def request(
         self,
@@ -339,6 +373,26 @@ class Peer:
         except ConnectionClosedError:
             logger.debug("dropped %s to %s: connection closed", msg.type.value, self.peername)
 
+    # -- heartbeat --
+
+    async def _heartbeat_loop(self, interval: float) -> None:
+        """Ping every ``interval`` seconds; close if too many go unanswered.
+
+        Each ping is sent from its own task, so a send stuck behind a big
+        message (or a remote that stopped reading) never stops the clock.
+        """
+        for number in itertools.count(FIRST_PING):
+            if self._unanswered > self._max_missed_pongs:
+                message = (
+                    f"no pong for {self._unanswered} pings in a row "
+                    f"({interval}s apart) from {self.peername}"
+                )
+                self._shutdown(HeartbeatTimeoutError(message))
+                return
+            self._unanswered += 1
+            self._track(self._send_quietly(Message(MessageType.PING, body=number)))
+            await sleep(interval)
+
     # -- receiving --
 
     async def _read_loop(self) -> None:
@@ -375,7 +429,7 @@ class Peer:
             case MessageType.PING:
                 self._track(self._send_quietly(Message(MessageType.PONG, msg.id, body=msg.body)))
             case MessageType.PONG:
-                pass  # the heartbeat (next task) listens for these
+                self._unanswered = 0  # someone is still there
 
     def _settle(self, msg: Message) -> None:
         """Hand a response or error to the request waiting for it."""
@@ -459,7 +513,7 @@ class Peer:
         self._closed = True
         self._cause = cause
         me = current_task()
-        for task in [self._reader, *self._tasks]:
+        for task in [self._reader, self._heartbeat, *self._tasks]:
             if task is not None and task is not me:
                 task.cancel()
         reason = LOCAL_CLOSE_MESSAGE if cause is None else f"{LOCAL_CLOSE_MESSAGE}: {cause}"

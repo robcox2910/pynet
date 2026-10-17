@@ -69,6 +69,7 @@ and Python's `requests` library do under the hood.
 | **[Subprocesses](concepts/subprocesses.md)** | Helpers and baby monitors | Run many commands at once, stream their output, notice exits, kill process groups |
 | **[Framing](concepts/framing.md)** | Envelopes with the page count on the front | Length-prefixed messages so the reader knows where each one ends |
 | **[Messaging](concepts/messaging.md)** | Walkie-talkies with call signs | Versioned message envelopes with ids, methods and binary attachments |
+| **[Heartbeats and Reconnect](concepts/heartbeats-and-reconnect.md)** | "Are you still there?" on the phone | Ping on a timer and hang up when too many pongs go missing |
 
 ## Let's Start!
 
