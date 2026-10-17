@@ -42,9 +42,13 @@ caller can see:
   frame) end it.
 - An incoming ``ping`` is answered with a ``pong`` carrying the same
   ``id`` and ``body``. Sending pings is the heartbeat's job (next task).
+- Every message goes out whole or not at all: frames over the size limit
+  are refused before anything is written.
 - When the connection ends -- either side closes, or the socket dies --
-  every waiting ``request`` fails with ``ConnectionClosedError`` and the
-  ``on_close`` callbacks run once with the cause (``None`` when we closed).
+  every waiting ``request`` (even one still sending) fails with
+  ``ConnectionClosedError`` and the ``on_close`` callbacks run once with
+  the cause (``None`` when we closed). Closing never waits for a remote
+  that has stopped reading.
 """
 
 import inspect
@@ -267,6 +271,10 @@ HANDLER_ERROR = "handler_error"
 BAD_MESSAGE = "bad_message"
 UNSUPPORTED_VERSION = "unsupported_version"
 
+# On a polite local close, buffered bytes get this long to drain before
+# the socket is cut anyway (a remote that stopped reading never drains).
+CLOSE_GRACE = 1.0
+
 LOCAL_CLOSE_MESSAGE = "peer is closed"
 HANDLER_ERROR_MESSAGE = "Exception in message handler"
 CLOSE_CALLBACK_MESSAGE = "Exception in on_close callback"
@@ -367,6 +375,7 @@ class Peer:
         self._pending: dict[int, Future[Message]] = {}
         self._ids = itertools.count(FIRST_REQUEST_ID)
         self._send_lock = Lock()
+        self._sends: set[Future[None]] = set()
         self._reader: Task[None] | None = None
         self._tasks: set[Task[None]] = set()
         self._close_callbacks: list[CloseCallback] = []
@@ -467,8 +476,10 @@ class Peer:
         """Close the connection (safe to call more than once).
 
         Stops reading, cancels running handlers, fails waiting requests
-        with ``ConnectionClosedError`` and runs ``on_close`` callbacks with
-        ``None``.
+        and sends with ``ConnectionClosedError`` and runs ``on_close``
+        callbacks with ``None``. Bytes already buffered get ``CLOSE_GRACE``
+        seconds to go out; a message still being sent is cut off at once,
+        so ``close()`` returns promptly even if the remote stopped reading.
         """
         self._shutdown(None)
         await self.wait_closed()
@@ -486,8 +497,21 @@ class Peer:
         The frames are written by a separate task under the send lock, so
         another message's frames can never land in the middle, and
         cancelling the caller cannot leave half a message on the wire.
+        Every frame is checked against the size limit before anything is
+        written. If the peer closes while we wait (for example because
+        the remote stopped reading), the wait ends at once.
+
+        Raises:
+            FrameTooLargeError: If a frame is over the limit (nothing sent).
+            ConnectionClosedError: If the peer is closed or closes meanwhile.
+            ProtocolError: If ``msg`` cannot be encoded.
+
         """
         frames = encode_message(msg)
+        limit = self._conn.max_frame_size
+        for frame in frames:
+            if len(frame) > limit:
+                raise FrameTooLargeError(len(frame), limit)
         if self._closed:
             raise ConnectionClosedError(LOCAL_CLOSE_MESSAGE)
         writer = spawn(self._write_frames(frames))
@@ -504,7 +528,11 @@ class Peer:
                 done.set_exception(error)
 
         writer.add_done_callback(relay)
-        await done
+        self._sends.add(done)
+        try:
+            await done
+        finally:
+            self._sends.discard(done)
 
     async def _write_frames(self, frames: list[bytes]) -> None:
         """Write ``frames`` while holding the send lock."""
@@ -644,12 +672,18 @@ class Peer:
                 task.cancel()
         reason = LOCAL_CLOSE_MESSAGE if cause is None else f"{LOCAL_CLOSE_MESSAGE}: {cause}"
         pending, self._pending = self._pending, {}
-        for answer in pending.values():
-            if not answer.done():
+        for waiter in [*pending.values(), *self._sends]:
+            if not waiter.done():
                 error = ConnectionClosedError(reason)
                 error.__cause__ = cause
-                answer.set_exception(error)
-        self._conn.close()
+                waiter.set_exception(error)
+        if cause is not None or self._send_lock.locked():
+            # The connection is broken, or a send is stuck mid-message:
+            # flushing could wait forever, so cut the socket now.
+            self._conn.abort()
+        else:
+            self._conn.close()
+            get_running_loop().call_later(CLOSE_GRACE, self._conn.abort)
         callbacks, self._close_callbacks = self._close_callbacks, []
         for cb in callbacks:
             self._run_close_callback(cb)

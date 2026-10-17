@@ -103,7 +103,9 @@ signs, and does the talking and listening for you.
 - **One speaker at a time.** Sends are queued behind a `Lock`, so the
   attachment frames of one message never get mixed into another's. A
   message is always sent whole, even if the task that sent it is
-  cancelled halfway through.
+  cancelled halfway through. A frame over the size limit raises
+  `FrameTooLargeError` *before* anything is written, so nothing half-sent
+  is left on the wire.
 
 ## When Things Go Wrong
 
@@ -131,9 +133,15 @@ connection ends -- we close, they close, or the cable is cut -- the peer:
 
 1. stops reading and cancels running handlers,
 2. fails every waiting `request()` with `ConnectionClosedError` (at once,
-   not when its timeout runs out),
+   not when its timeout runs out) -- even one that is still sending,
 3. runs every `on_close(callback)` exactly once with the cause: `None`
    if we hung up, otherwise the error that ended the connection.
+
+If the other side has stopped listening (its radio is on but nobody is
+holding it), bytes we already queued could wait forever. So hanging up
+never waits for them: a message still being sent is cut off at once,
+and anything else queued gets `CLOSE_GRACE` (1 second) before the line
+is cut anyway.
 
 ## Try It
 
@@ -222,6 +230,10 @@ notifications over one connection, optionally with binary payloads.
 - A request timeout, with the late answer ignored.
 - Big concurrent sends never interleave, and a cancelled sender never
   leaves half a message on the wire.
+- An oversize attachment raises `FrameTooLargeError` with nothing sent,
+  and the next request works.
+- Closing while the remote has stopped reading returns promptly and fails
+  the still-sending request with `ConnectionClosedError`.
 - When the other side drops mid-request, the request fails with
   `ConnectionClosedError` well within a second; `on_close` runs once with
   the cause.

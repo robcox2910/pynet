@@ -82,6 +82,11 @@ class FramedConnection:
         """The underlying writer."""
         return self._writer
 
+    @property
+    def max_frame_size(self) -> int:
+        """The largest payload this connection sends or accepts."""
+        return self._max_frame_size
+
     async def send_frame(self, payload: bytes) -> None:
         """Write one frame and wait for backpressure to clear.
 
@@ -142,6 +147,10 @@ class FramedConnection:
     def close(self) -> None:
         """Close the connection once buffered bytes are sent."""
         self._writer.close()
+
+    def abort(self) -> None:
+        """Close at once, throwing away anything not yet sent (safe to repeat)."""
+        self._writer.abort()
 
     async def wait_closed(self) -> None:
         """Wait until the connection is fully closed."""

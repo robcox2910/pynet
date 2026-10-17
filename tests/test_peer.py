@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from pynet.errors import ConnectionClosedError, RemoteError
+from pynet.errors import ConnectionClosedError, FrameTooLargeError, RemoteError
 from pynet.framing import FramedConnection
 from pynet.loop import Cancelled, ErrorContext, Event, get_running_loop, run, sleep, spawn, wait_for
 from pynet.messaging import (
@@ -50,6 +50,8 @@ BAD_VERSION = 99
 PING_BODY = "are you there?"
 SENDERS = 3
 BIG = 2_000_000
+HUGE = [b"h" * 10_000_000] * 5
+FRAME_LIMIT = 1024
 EXPECTED_REQUEST_TIMEOUT = 30.0
 EXPECTED_HEARTBEAT_INTERVAL = 5.0
 EXPECTED_MAX_MISSED_PONGS = 3
@@ -489,6 +491,82 @@ class TestClosing:
             return time.monotonic() - began
 
         assert run_pair(body, setup) < SHORT
+
+    def test_close_with_stalled_remote_fails_inflight_send(self) -> None:
+        """Close promptly and fail a still-sending request when the remote never reads."""
+
+        async def never_read(_reader: StreamReader, _writer: StreamWriter) -> None:
+            """Accept the connection and ignore it."""
+            await sleep(LONG)
+
+        async def main() -> tuple[float, bool]:
+            """Start a huge request, then close the client peer."""
+            server = await start_server(never_read, HOST, ANY_PORT)
+            client = await connect(HOST, server.port, heartbeat_interval=None)
+            try:
+                pending = spawn(client.request("x", attachments=HUGE, timeout=TINY_TIMEOUT))
+                await sleep(TINY_TIMEOUT * 2)
+                stuck = not pending.done()
+                began = time.monotonic()
+                await wait_for(client.close(), SHORT)
+                with pytest.raises(ConnectionClosedError):
+                    await wait_for(pending, SHORT)
+                return time.monotonic() - began, stuck
+            finally:
+                server.close()
+                await server.wait_closed()
+
+        elapsed, stuck = run(main())
+        assert stuck
+        assert elapsed < SHORT
+
+    def test_remote_drop_fails_stalled_send(self) -> None:
+        """Fail a still-sending request when the stalled remote hangs up."""
+
+        async def read_nothing_then_hang_up(_reader: StreamReader, writer: StreamWriter) -> None:
+            """Accept, ignore everything, then close."""
+            await sleep(TINY_TIMEOUT * 2)
+            writer.abort()
+
+        async def main() -> BaseException | None:
+            """Start a huge request and wait for the remote to go."""
+            server = await start_server(read_nothing_then_hang_up, HOST, ANY_PORT)
+            client = await connect(HOST, server.port, heartbeat_interval=None)
+            causes: list[BaseException | None] = []
+            client.on_close(causes.append)
+            try:
+                with pytest.raises(ConnectionClosedError):
+                    await wait_for(client.request("x", attachments=HUGE), SHORT)
+                await wait_for(client.wait_closed(), SHORT)
+                return causes[0]
+            finally:
+                server.close()
+                await server.wait_closed()
+
+        assert isinstance(run(main()), ConnectionClosedError)
+
+    def test_oversize_attachment_sends_nothing(self) -> None:
+        """Refuse an over-limit attachment before writing, and keep working."""
+
+        async def main() -> Message:
+            """Send an oversize request, then a normal one."""
+            server = await serve(HOST, ANY_PORT, echo_setup, heartbeat_interval=None)
+            reader, writer = await open_connection(HOST, server.port)
+            client = Peer(
+                FramedConnection(reader, writer, max_frame_size=FRAME_LIMIT),
+                heartbeat_interval=None,
+            )
+            client.start()
+            try:
+                with pytest.raises(FrameTooLargeError):
+                    await client.request("echo", attachments=[b"o" * (FRAME_LIMIT + 1)])
+                return await client.request("echo", BODY, timeout=SHORT)
+            finally:
+                await client.close()
+                server.close()
+                await server.wait_closed()
+
+        assert run(main()).body == BODY
 
     def test_on_close_called_once_with_cause(self) -> None:
         """Run on_close callbacks once: with the error remotely, with None locally."""

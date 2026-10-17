@@ -24,6 +24,7 @@ BODY = b"hello world"
 PARTIAL_BODY = b"hel"
 LENGTH_FORMAT = ">I"
 CLEAN_MESSAGE = "peer closed"
+BIG_UNSENT = 50_000_000
 
 
 async def connected_pair(
@@ -223,3 +224,26 @@ class TestFramedConnection:
             return str(info.value)
 
         assert "mid-frame" in run(scenario())
+
+    def test_max_frame_size_property(self) -> None:
+        """Expose the frame size limit the connection enforces."""
+
+        async def scenario() -> int:
+            client, _peer, _, _ = await connected_pair(client_limit=SMALL_LIMIT)
+            client.close()
+            return client.max_frame_size
+
+        assert run(scenario()) == SMALL_LIMIT
+
+    def test_abort_drops_buffer_and_closes_at_once(self) -> None:
+        """Close immediately on abort, even with unsent bytes buffered."""
+
+        async def scenario() -> bool:
+            client, _peer, writer, _ = await connected_pair()
+            writer.write(encode_frame(b"z" * BIG_UNSENT, max_size=BIG_UNSENT))
+            client.abort()
+            await wait_for(client.wait_closed(), LONG)
+            client.abort()
+            return writer.is_closing()
+
+        assert run(scenario())
