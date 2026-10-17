@@ -1,5 +1,6 @@
 """Test the child watcher and subprocesses running on the event loop."""
 
+import contextlib
 import gc
 import importlib.util
 import os
@@ -319,6 +320,25 @@ class TestSignals:
             return greeting, rest, code
 
         assert run(main()) == (HI, b"", -signal.SIGKILL)
+
+    def test_kill_group_after_leader_exits(self) -> None:
+        """Kill a grandchild left behind after the shell itself has exited."""
+
+        async def main() -> tuple[int, bytes]:
+            """Let the shell exit, kill its leftover group, then expect EOF."""
+            process = await create_process(["sh", "-c", "sleep 30 & echo hi"])
+            assert process.stdout is not None
+            code = await wait_for(process.wait(), LONG)
+            try:
+                process.kill_group()
+                output = await wait_for(process.stdout.read(), SHORT)
+            finally:
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(process.pid, signal.SIGKILL)  # clean up if the fix failed
+                process.close()
+            return code, output
+
+        assert run(main()) == (0, HI)
 
     def test_kill_group_needs_new_session(self) -> None:
         """Refuse to kill a group the child does not lead."""

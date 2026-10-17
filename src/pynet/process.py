@@ -14,8 +14,9 @@ number (``-9``) if they were stopped with a signal.
 
 Each helper starts in a **new session** by default, so it leads its own
 process group. ``kill_group()`` then stops the helper *and* anything it
-started -- a shell's background ``sleep`` included -- so no grandchild is
-left holding your pipe open.
+started -- a shell's background ``sleep`` included, even after the
+shell itself has exited -- so no grandchild is left holding your pipe
+open.
 """
 
 import contextlib
@@ -105,8 +106,17 @@ class Process:
     def kill_group(self, sig: int = signal.SIGKILL) -> None:
         """Send ``sig`` to the child's whole process group (``os.killpg``).
 
-        This reaches grandchildren too. Does nothing if the child has
-        already been reaped.
+        This reaches grandchildren too -- even after the child itself has
+        exited and been reaped. A shell that ran ``sleep 30 &`` and then
+        finished leaves the ``sleep`` behind in its group, still holding
+        the pipe; ``kill_group()`` stops it. If nobody is left in the
+        group, it does nothing.
+
+        One small risk remains once the child is reaped *and* its group
+        is empty: the kernel may reuse the number for a brand-new
+        process, which could (rarely) lead a group of the same number.
+        The kernel never reuses it while anyone in the old group is
+        alive, so the leftovers we mean to stop are always the ones hit.
 
         Raises:
             RuntimeError: If the child was started with ``new_session=False``
@@ -115,7 +125,11 @@ class Process:
         """
         if not self._new_session:
             raise RuntimeError(NO_GROUP_MESSAGE)
-        get_child_watcher().send_signal(self.pid, sig, group=True)
+        if get_child_watcher().send_signal(self.pid, sig, group=True):
+            return
+        # Already reaped: the leader is gone, but its group may live on.
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(self.pid, sig)
 
     def close(self) -> None:
         """Close every pipe that is still open, throwing away unread output.

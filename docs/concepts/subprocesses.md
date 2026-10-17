@@ -78,10 +78,17 @@ one -- so you check each room you are responsible for.
   (default `SIGKILL`) to the whole group -- the helper *and* anything it
   started. That matters: in `sh -c "sleep 30 & echo hi; wait"`, killing
   only `sh` leaves `sleep` holding the stdout pipe open, so your read
-  would wait 30 seconds for EOF.
-- **No stale signals.** `kill()`, `terminate()`, `send_signal()` and
-  `kill_group()` do nothing once the child has been reaped, so they can
-  never hit a stranger that reused the pid.
+  would wait 30 seconds for EOF. It still works *after* the helper has
+  finished: in `sh -c "sleep 30 & echo hi"` the shell exits at once,
+  but its `sleep` lives on in the group, and `kill_group()` stops it.
+- **No stale signals.** `kill()`, `terminate()` and `send_signal()` do
+  nothing once the child has been reaped, so they can never hit a
+  stranger that reused the pid. `kill_group()` is the one exception, on
+  purpose: leftovers in the group are exactly what it is for. The
+  kernel never hands out a group's number again while anyone in that
+  group is alive, so the leftovers are always what it hits. Only if
+  the group is already empty could the number (rarely) belong to a
+  newcomer -- so call `kill_group()` soon after the job, not hours later.
 - **Tidy up.** `process.close()` closes any pipe still open (for
   example a `stderr` nobody read), throwing away unread output.
 
@@ -141,6 +148,8 @@ If you only need one short command and nothing else is happening, plain
   after the child has been reaped do nothing.
 - `sh -c "sleep 30 & echo hi; wait"`: after `kill_group()`, stdout
   reaches EOF and `wait()` returns within a short timeout.
+- `sh -c "sleep 30 & echo hi"`: once the shell has exited,
+  `kill_group()` still stops the leftover `sleep`, so stdout reaches EOF.
 - Three `sleep 0.3` jobs run at the same time (well under 0.6s).
 - Several `wait()` calls get the same code, and a timed-out `wait()`
   does not spoil the next one.
