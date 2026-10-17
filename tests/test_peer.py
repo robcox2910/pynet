@@ -367,6 +367,33 @@ class TestPush:
         run_pair(body, server_setup, client_setup)
         assert sorted(map(str, heard)) == ["from client", "from server"]
 
+    def test_pushes_are_handled_one_at_a_time_in_order(self) -> None:
+        """Finish the first push's handler before the second push's handler starts."""
+        events: list[str] = []
+        both_done = Event()
+
+        async def note(msg: Message) -> None:
+            """Record start and end; the first push dawdles."""
+            events.append(f"start {msg.body}")
+            if msg.body == "first":
+                await sleep(SLOW)
+            events.append(f"end {msg.body}")
+            if msg.body == "second":
+                both_done.set()
+
+        def server_setup(peer: Peer) -> None:
+            """Register the note handler."""
+            peer.on("note", note)
+
+        async def body(client: Peer, _server: Peer) -> None:
+            """Push twice, back to back."""
+            await client.push("note", "first")
+            await client.push("note", "second")
+            await wait_for(both_done.wait(), SHORT)
+
+        run_pair(body, server_setup)
+        assert events == ["start first", "end first", "start second", "end second"]
+
     def test_concurrent_large_sends_never_interleave(self) -> None:
         """Keep each message's attachment frames together under backpressure."""
         received: list[Message] = []

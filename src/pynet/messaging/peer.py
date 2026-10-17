@@ -2,8 +2,9 @@
 
 A ``Peer`` is one end of a live connection. It sends requests and waits
 for the matching answer, runs a handler task for every incoming request
-(so a slow call never holds up a fast one), delivers one-way pushes, and
-turns every failure into something the caller can see:
+(so a slow call never holds up a fast one), delivers one-way pushes one
+at a time in arrival order, and turns every failure into something the
+caller can see:
 
 - A request for a method nobody registered gets an ``error`` reply with
   code ``unknown_method``; a handler that raises gets ``handler_error``
@@ -39,6 +40,7 @@ import inspect
 import itertools
 import json
 import logging
+from collections import deque
 from collections.abc import Awaitable, Callable, Coroutine, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -198,6 +200,8 @@ class Peer:
         self._heartbeat: Task[None] | None = None
         self._unanswered = 0
         self._tasks: set[Task[None]] = set()
+        self._pushes: deque[tuple[Handler, Message]] = deque()
+        self._push_worker: Task[None] | None = None
         self._close_callbacks: list[CloseCallback] = []
         self._closed = False
         self._cause: BaseException | None = None
@@ -443,13 +447,31 @@ class Peer:
             answer.set_exception(_remote_error(msg.body))
 
     def _deliver(self, msg: Message) -> None:
-        """Run the push handler for ``msg``, or log and drop it."""
+        """Queue ``msg`` for its push handler, or log and drop it.
+
+        Pushes on one connection are handled one at a time, in the order
+        they arrived, by a single push worker: a push's handler never
+        starts before the previous push's handler has finished. (Requests
+        are different: each runs in its own task, so a slow call never
+        holds up a fast one.)
+        """
         method = msg.method or ""
         handler = self._handlers.get(method)
         if handler is None:
             logger.warning("dropping push %r from %s: no handler", method, self.peername)
             return
-        self._track(self._run_push(handler, msg))
+        self._pushes.append((handler, msg))
+        if self._push_worker is None:
+            self._push_worker = self._track(self._push_loop())
+
+    async def _push_loop(self) -> None:
+        """Run queued push handlers one by one until the queue is empty."""
+        try:
+            while self._pushes:
+                handler, msg = self._pushes.popleft()
+                await self._run_push(handler, msg)
+        finally:
+            self._push_worker = None
 
     async def _run_push(self, handler: Handler, msg: Message) -> None:
         """Run a push handler, reporting any exception."""
@@ -498,11 +520,12 @@ class Peer:
         msg_id, code = target
         self._track(self._send_quietly(self._error_reply(msg_id, code, str(error))))
 
-    def _track(self, coro: Coroutine[Any, Any, None]) -> None:
-        """Run ``coro`` in its own task, cancelled if the peer closes."""
+    def _track(self, coro: Coroutine[Any, Any, None]) -> Task[None]:
+        """Run ``coro`` in its own task, cancelled if the peer closes; return the task."""
         task = spawn(coro)
         self._tasks.add(task)
         task.add_done_callback(lambda _done: self._tasks.discard(task))
+        return task
 
     # -- closing --
 

@@ -96,7 +96,21 @@ signs, and does the talking and listening for you.
   `Reply(body, attachments)` when it wants to send bytes back too.
 - **Push.** `await peer.push(method, body)` is "Unit 42, FYI, over" -- no
   call sign and no answer. Either side can push at any time. A push
-  nobody registered a handler for is logged and dropped.
+  nobody registered a handler for is logged and dropped. Pushes on one
+  connection are handled **one at a time, in the order they arrived**,
+  like news read out from a single in-tray: the handler for the second
+  push does not start until the first one has finished, even if the
+  first one stops to `await sleep(...)`. (Requests are different: each
+  gets its own task.) So a push handler that waits a long time holds up
+  the pushes behind it -- hand slow work to `spawn(...)` if order does
+  not matter for it.
+
+```
+  pushes in:  [news 1] [news 2] [news 3]
+                 |
+  push worker:  news 1 ......done -> news 2 ..done -> news 3 ..done
+  requests:     each one in its own task, side by side
+```
 - **Timeouts.** `request(..., timeout=...)` (default 30 seconds) raises
   `TimeoutError` if no answer comes in time. If the answer turns up
   later, it is logged and ignored.
@@ -226,6 +240,8 @@ notifications over one connection, optionally with binary payloads.
 - The decoder is reusable after an error.
 - Over real sockets: request/response, replies with attachments, pushes
   both ways, and a fast request overtaking a slow one on one connection.
+- Two pushes back to back: the second push's handler starts only after
+  the first (which sleeps) has finished.
 - `unknown_method`, `handler_error` (and the connection still works
   afterwards), a handler's own `RemoteError`, `bad_message`,
   `unsupported_version`, junk frames, stray responses, ping/pong.
