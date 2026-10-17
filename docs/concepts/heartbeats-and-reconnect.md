@@ -371,4 +371,5 @@ For the reconnecting client:
 ## Next Up
 
 Putting it to work: a PyStack shell command that serves, connects and
-sends one message round trip.
+sends one message round trip. After that, the phone call goes real:
+[WebSocket, For Real](websocket-real.md).

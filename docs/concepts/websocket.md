@@ -55,6 +55,11 @@ In PyNet a `WebSocketFrame` is a simple data holder (opcode + payload);
 it does not serialise itself to the real over-the-wire binary format.
 Encoding a frame into actual bytes is a great exercise to try yourself.
 
+## See It for Real
+
+This page is a simulation. To see the real opening handshake, read
+[WebSocket, For Real](websocket-real.md).
+
 ## Next Up
 
 We've covered real-time connections. What about email?

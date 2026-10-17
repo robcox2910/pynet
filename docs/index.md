@@ -70,6 +70,7 @@ and Python's `requests` library do under the hood.
 | **[Framing](concepts/framing.md)** | Envelopes with the page count on the front | Length-prefixed messages so the reader knows where each one ends |
 | **[Messaging](concepts/messaging.md)** | Walkie-talkies with call signs | Versioned message envelopes with ids, methods and binary attachments |
 | **[Heartbeats and Reconnect](concepts/heartbeats-and-reconnect.md)** | "Are you still there?" on the phone | Ping on a timer, hang up when pongs go missing, and redial with backoff and jitter |
+| **[WebSocket, For Real](concepts/websocket-real.md)** | The phone call, for real | The RFC 6455 upgrade handshake and the accept-key computation |
 
 ## Let's Start!
 

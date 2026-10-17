@@ -2,7 +2,7 @@
 
 import pytest
 
-from pynet.base64 import b64_decode, b64_encode
+from pynet.base64 import b64_decode, b64_decode_bytes, b64_encode
 
 
 class TestB64Encode:
@@ -92,3 +92,35 @@ class TestB64RoundTrip:
     def test_round_trip(self, text: str) -> None:
         """Encode then decode and recover the original text."""
         assert b64_decode(b64_encode(text)) == text
+
+
+BINARY_SAMPLE = b"\x00\xff\x10"
+ALL_BYTE_VALUES = bytes(range(256))
+
+
+class TestB64DecodeBytes:
+    """Test the b64_decode_bytes function."""
+
+    def test_b64_decode_bytes_roundtrip_binary(self) -> None:
+        """Recover raw binary that is not valid UTF-8."""
+        assert b64_decode_bytes(b64_encode(BINARY_SAMPLE)) == BINARY_SAMPLE
+
+    def test_roundtrip_every_byte_value(self) -> None:
+        """Recover all 256 byte values."""
+        assert b64_decode_bytes(b64_encode(ALL_BYTE_VALUES)) == ALL_BYTE_VALUES
+
+    def test_empty(self) -> None:
+        """Decode an empty string to empty bytes."""
+        assert b64_decode_bytes("") == b""
+
+    @pytest.mark.parametrize("bad", ["!!!!", "SGVs bG8=", "SGV", "SGVsbG8", "SA=A", "=AAA", "S==="])
+    def test_invalid_rejected(self, bad: str) -> None:
+        """Raise ValueError for bad characters, length or padding."""
+        with pytest.raises(ValueError, match="Invalid Base64"):
+            b64_decode_bytes(bad)
+
+    def test_b64_decode_unchanged(self) -> None:
+        """Keep the text wrapper's behaviour."""
+        assert b64_decode("SGVsbG8=") == "Hello"
+        with pytest.raises(ValueError, match="Invalid Base64 character"):
+            b64_decode("!!!!")

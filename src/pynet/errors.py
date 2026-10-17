@@ -65,6 +65,10 @@ class ProtocolError(PyNetError):
     """Raise when a peer sends something that breaks the message protocol."""
 
 
+class HandshakeError(ProtocolError):
+    """Raise when a WebSocket opening handshake is malformed or refused."""
+
+
 class RemoteError(PyNetError):
     """Raise when the other end answers a request with an error reply.
 
