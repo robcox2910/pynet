@@ -72,6 +72,12 @@ anyway. A send that is stuck because the remote stopped reading does not
 stop the heartbeat either: each ping is sent from its own task, so the
 clock keeps ticking.
 
+One caution: messages go out one at a time, so a ping (and the other
+side's pong) waits behind any big message already being sent. A very
+large transfer over a slow link can take longer than the death time, and
+then a healthy but busy peer is declared dead -- for those, raise
+`heartbeat_interval` or send the data in smaller pieces.
+
 This is how a scheduler notices that an agent machine is gone: register
 `on_close` and check whether the cause is a `HeartbeatTimeoutError`.
 
@@ -143,6 +149,168 @@ server: *freezes* (socket still open, nobody answering)
 client: declared dead after 0.6s: HeartbeatTimeoutError
 ```
 
+## Calling Back: the Reconnecting Client
+
+The heartbeat tells you the line is dead. What then? If you were on the
+phone, you would ring back -- but not a hundred times a second. You
+would try again in a moment, then wait a bit longer, then longer still,
+and if the whole office was cut off at once, you would not all ring at
+exactly the same second.
+
+A `ReconnectingClient` does exactly that. It keeps one `Peer` connected
+to a server, and whenever the connection is lost -- the server
+restarts, the network blips, the heartbeat gives up -- it **redials**:
+
+- **Exponential backoff.** Wait `initial_backoff` (0.5 s) after the
+  first failure, then double it each time -- 1 s, 2 s, 4 s ... -- but
+  never more than `max_backoff` (30 s). A server that is down for an
+  hour gets one knock every 30 seconds, not a flood.
+- **Jitter.** Each wait is nudged by a random amount, up to `jitter`
+  (0.1 means +/-10%). If a hundred agents lost the same scheduler at
+  the same moment, jitter spreads their redials out instead of having
+  them all knock at once (a "thundering herd").
+- **Start over after success.** Once a call gets through, the next drop
+  starts again from 0.5 s.
+
+```
+   delay = min(max_backoff, initial_backoff * 2**attempt) * (1 + random(-jitter, +jitter))
+
+   attempt   base delay   with 10% jitter, somewhere in
+   -------   ----------   -----------------------------
+      0        0.5 s      [0.45 ...... 0.55]
+      1        1.0 s      [0.9  ...... 1.1 ]
+      2        2.0 s      [1.8  ...... 2.2 ]
+      3        4.0 s      [3.6  ...... 4.4 ]
+      ...
+      6+      30.0 s      [27.0 ...... 33.0]   (capped)
+
+   time --->
+   dial  x . x . . x . . . . x . . . . . . . . x . . . . . . . . . . . . . . . . . o
+         0  0.5   1.5       3.5               7.5                               15.5
+         x = refused     o = connected          (no jitter shown)
+
+   three agents losing the same server, with jitter:
+   agent A   x . . x . . . . . x
+   agent B   x . . . x . . . . . . x          <- spread out, not all at once
+   agent C   x . . x . . . . . . x
+```
+
+### Events
+
+`on_event(cb)` tells you what is happening, with a `ConnectionEvent`:
+
+| Event | When |
+|-------|------|
+| `CONNECTED` | The first successful connection |
+| `DISCONNECTED` | A connection that was up has gone |
+| `RECONNECTED` | Any later successful connection |
+
+A dial that is refused fires nothing -- there was no connection to
+lose. Callbacks run straight away (not in a task); one that raises is
+reported to the loop and the others still run.
+
+### While the Line Is Down
+
+`request` and `push` work just like a `Peer`'s, but while there is no
+connection they raise `NotConnectedError` **at once**. Nothing is
+queued up to be sent later, and nothing is replayed after reconnecting:
+only the caller knows whether "start job 7" is safe to send twice. To
+wait for the line, call `await client.wait_connected(timeout)` (it
+raises `TimeoutError` if the time runs out).
+
+`setup` runs on every new `Peer`, so the handlers it registers are there
+again after each reconnect -- the server can call the client's methods
+on the new connection just as before.
+
+`stop()` cancels the redial loop (even mid-backoff) and closes the
+connection. If one was up, that sends one last `DISCONNECTED`; after
+that the client is silent for good (it cannot be started again), and
+anyone in `wait_connected` gets `NotConnectedError`.
+
+### Try It: Redialling
+
+The server turns up late, then restarts on the same port. Short
+backoffs keep the demo quick:
+
+```python
+from pynet.errors import NotConnectedError
+from pynet.loop import Event, run, sleep
+from pynet.messaging import ConnectionEvent, JsonValue, Message, Peer, ReconnectingClient, serve
+
+HOST = "127.0.0.1"
+server_peers: list[Peer] = []
+
+
+async def echo(msg: Message) -> JsonValue:
+    return msg.body
+
+
+def server_setup(peer: Peer) -> None:
+    peer.on("echo", echo)
+    server_peers.append(peer)
+
+
+async def main() -> None:
+    # Find a free port and let it go: the server will turn up there later.
+    probe = await serve(HOST, 0, server_setup)
+    port = probe.port
+    probe.close()
+    await probe.wait_closed()
+
+    reconnected = Event()
+
+    def on_event(event: ConnectionEvent) -> None:
+        print("client:", event)
+        if event is ConnectionEvent.RECONNECTED:
+            reconnected.set()
+
+    client = ReconnectingClient(HOST, port, initial_backoff=0.05, max_backoff=0.4)
+    client.on_event(on_event)
+    client.start()
+
+    try:
+        await client.request("echo", "too early")
+    except NotConnectedError:
+        print("request while down: NotConnectedError")
+
+    await sleep(0.2)  # the client redials meanwhile and is refused
+    server = await serve(HOST, port, server_setup)
+    await client.wait_connected(timeout=5.0)
+    print("echo:", (await client.request("echo", "hello")).body)
+
+    print("server: restarting")
+    server.close()
+    await server.wait_closed()
+    for peer in server_peers:
+        await peer.close()
+    await sleep(0.2)
+    server = await serve(HOST, port, server_setup)
+    await reconnected.wait()
+    print("echo:", (await client.request("echo", "hello again")).body)
+
+    await client.stop()
+    server.close()
+    await server.wait_closed()
+
+
+run(main())
+```
+
+Output:
+
+```
+request while down: NotConnectedError
+client: connected
+echo: hello
+server: restarting
+client: disconnected
+client: reconnected
+echo: hello again
+client: disconnected
+```
+
+The last `disconnected` comes from `stop()` closing the connection.
+
 ## When to Use
 
 Keep heartbeats on for any long-lived connection where you need to know
@@ -151,6 +319,11 @@ client on a flaky network. Turn sending off (`heartbeat_interval=None`)
 for short request/response sessions, or when the other side is known to
 be local and its exit will be seen as end of file anyway. Pick the
 interval as a trade: shorter notices death sooner but sends more pings.
+
+Use a `ReconnectingClient` for anything that should stay connected on
+its own -- like a remote agent that must find its scheduler again after
+the scheduler restarts. Use plain `connect` for one-off conversations,
+where giving up and reporting the error is the right answer.
 
 ## What We Test
 
@@ -175,8 +348,27 @@ many 5-second intervals pass in milliseconds.
   a malformed `ping` or `push` with an id is reported, not answered with
   an `error`.
 
+For the reconnecting client:
+
+- `backoff_delay` doubles from 0.5 s and caps at 30 s (no jitter), stays
+  within +/-`jitter` of that (and really varies), and does not overflow
+  after thousands of attempts.
+- With `connect` swapped for a script (so only timers move the clock),
+  dials happen at exactly 0, 0.5, 1.5, 3.5 s, and after a good
+  connection drops the waits start again from 0.5 s.
+- A client started before its server connects once the server appears;
+  a server restarted on the same port is redialled, giving events
+  `CONNECTED, DISCONNECTED, RECONNECTED`, and `setup`'s handlers work on
+  the new connection.
+- `request` and `push` raise `NotConnectedError` while down;
+  `wait_connected` times out with `TimeoutError`.
+- `stop()` cancels the redial loop (a server that appears afterwards is
+  never dialled), closes a live connection with one `DISCONNECTED`, is
+  safe to call twice, and wakes `wait_connected` waiters.
+- A `setup` or event callback that raises is reported to the loop, and
+  the client carries on.
+
 ## Next Up
 
-Reconnect: when the line drops, the client redials with growing waits
-(exponential backoff with jitter), and tells you when it is connected,
-disconnected and reconnected.
+Putting it to work: a PyStack shell command that serves, connects and
+sends one message round trip.

@@ -556,6 +556,9 @@ async def connect(
 ) -> Peer:
     """Connect to ``host:port`` and return a started ``Peer``.
 
+    If ``setup`` (or building the ``Peer``) raises, the new socket is cut
+    before the error is passed on, so nothing is left open.
+
     Args:
         host: The server's host name or address.
         port: The server's port.
@@ -569,9 +572,14 @@ async def connect(
 
     """
     reader, writer = await open_connection(host, port)
-    peer = Peer(FramedConnection(reader, writer), **peer_kwargs)
-    if setup is not None:
-        setup(peer)
+    conn = FramedConnection(reader, writer)
+    try:
+        peer = Peer(conn, **peer_kwargs)
+        if setup is not None:
+            setup(peer)
+    except BaseException:
+        conn.abort()
+        raise
     peer.start()
     return peer
 

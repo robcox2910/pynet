@@ -37,6 +37,14 @@ class HeartbeatTimeoutError(ConnectionClosedError):
     """
 
 
+class NotConnectedError(PyNetError):
+    """Raise when a reconnecting client is asked to send while it is down.
+
+    Nothing is queued for later: the caller decides whether to wait for
+    the connection to come back (``wait_connected``) and try again.
+    """
+
+
 class FrameTooLargeError(PyNetError):
     """Raise when a frame's length is over the allowed maximum.
 
