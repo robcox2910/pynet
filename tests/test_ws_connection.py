@@ -2,6 +2,7 @@
 
 import importlib.util
 import os
+import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
@@ -68,6 +69,8 @@ LONG_REASON = "r" * 124
 TICK = 0.01
 SHORT_TIMEOUT = 0.05
 HALF_FRAME = 3  # two header bytes and one mask-key byte
+STUCK_SEND = b"x" * (16 * 1024 * 1024)  # far more than the kernel buffers hold
+CLOSE_MARGIN = 0.5
 OVERSIZE_HEAD = b"GET / HTTP/1.1\r\nX-Padding: " + b"p" * (16 * 1024 + 1)
 EXAMPLE = Path(__file__).resolve().parent.parent / "examples" / "ws_echo.py"
 
@@ -432,6 +435,56 @@ class TestClosing:
         ws = run(main())
         assert ws.closed
         assert ws.close_code == ABNORMAL
+
+    def test_close_is_bounded_behind_a_stuck_send(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Return from ``close()`` within its timeout even when a big send is stuck."""
+        monkeypatch.setattr(connection_module, "CLOSE_TIMEOUT", TINY_TIMEOUT)
+        took: list[float] = []
+
+        async def handler(ws: WebSocket) -> None:
+            """Start a send the peer will never read, then close."""
+            sender = spawn(ws.send_bytes(STUCK_SEND))
+            await sleep(TICK)
+            began = time.monotonic()
+            await wait_for(ws.close(), LONG)
+            took.append(time.monotonic() - began)
+            with pytest.raises(WebSocketClosed):
+                await wait_for(sender, LONG)
+
+        async def main() -> list[float]:
+            """Dial and never read a byte."""
+            async with await serve_websocket(handler, HOST, ANY_PORT) as server:
+                _reader, writer = await raw_dial(server.port)
+                await wait_for(_until(lambda: bool(took)), LONG)
+                writer.abort()
+                return took
+
+        (elapsed,) = run(main())
+        assert elapsed < TINY_TIMEOUT + CLOSE_MARGIN
+
+    def test_pong_is_bounded_behind_a_stuck_send(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """End ``recv()`` with 1006 when its pong cannot get out within the timeout."""
+        monkeypatch.setattr(connection_module, "CLOSE_TIMEOUT", TINY_TIMEOUT)
+        codes: list[int] = []
+
+        async def handler(ws: WebSocket) -> None:
+            """Start a send the peer will never read, then receive its ping."""
+            spawn(ws.send_bytes(STUCK_SEND))
+            with pytest.raises(WebSocketClosed) as info:
+                await wait_for(ws.recv(), LONG)
+            codes.append(info.value.code)
+
+        async def main() -> list[int]:
+            """Ping the server, then never read a byte."""
+            async with await serve_websocket(handler, HOST, ANY_PORT) as server:
+                _reader, writer = await raw_dial(server.port)
+                await sleep(TICK)
+                send_raw(writer, Frame(True, Opcode.PING, PING_DATA))
+                await wait_for(_until(lambda: bool(codes)), LONG)
+                writer.abort()
+                return codes
+
+        assert run(main()) == [ABNORMAL]
 
     def test_close_rejects_bad_arguments(self) -> None:
         """Refuse a reserved close code or a reason that does not fit."""

@@ -242,23 +242,27 @@ class WebSocket:
             return
         payload = _close_payload(code, reason)
         try:
-            if not self._close_sent:
-                self._close_sent = True
-                await self._write(Opcode.CLOSE, payload)
-            await self._await_peer_close()
-        except ConnectionClosedError, TimeoutError:
-            pass  # the peer is gone or silent: we hang up below either way
+            # One deadline covers sending our goodbye *and* hearing theirs:
+            # the CLOSE may queue behind a big send the peer is not reading.
+            async with timeout(CLOSE_TIMEOUT):
+                if not self._close_sent:
+                    self._close_sent = True
+                    await self._write(Opcode.CLOSE, payload)
+                await self._await_peer_close()
+        except ConnectionClosedError:
+            pass  # the peer is gone: we hang up below either way
+        except TimeoutError:
+            self._writer.abort()  # silent or stuck: drop the line (wakes a stuck drain)
         finally:
             self._finish(CLOSE_ABNORMAL, "")
 
     async def _await_peer_close(self) -> None:
         """Wait for the peer's CLOSE, reading (and dropping) messages if nobody else is."""
-        async with timeout(CLOSE_TIMEOUT):
-            if self._receiving:
-                await self._done.wait()
-                return
-            while True:
-                await self.recv()
+        if self._receiving:
+            await self._done.wait()
+            return
+        while True:
+            await self.recv()
 
     async def _receive_message(self) -> str | bytes:
         """Read frames until one whole data message is complete."""
@@ -269,7 +273,10 @@ class WebSocket:
                 raise await self._on_close(frame.payload)
             if frame.opcode is Opcode.PING:
                 if not self._close_sent:
-                    await self._write_or_end(Opcode.PONG, frame.payload)
+                    try:
+                        await self._reply(Opcode.PONG, frame.payload)
+                    except ConnectionClosedError:
+                        raise self._finish(CLOSE_ABNORMAL, "") from None
                 continue
             if frame.opcode is Opcode.PONG:
                 continue
@@ -332,7 +339,7 @@ class WebSocket:
             return
         self._close_sent = True
         with suppress(ConnectionClosedError):
-            await self._write(Opcode.CLOSE, payload)
+            await self._reply(Opcode.CLOSE, payload)
 
     def _finish(self, code: int, reason: str) -> WebSocketClosed:
         """End the conversation (once), close the stream, return the ending."""
@@ -357,6 +364,25 @@ class WebSocket:
             await self._write(opcode, payload)
         except ConnectionClosedError:
             raise self._finish(CLOSE_ABNORMAL, "") from None
+
+    async def _reply(self, opcode: Opcode, payload: bytes) -> None:
+        """Send a control reply (PONG or CLOSE), giving up after ``CLOSE_TIMEOUT``.
+
+        The reply may have to queue behind a big send that the peer is not
+        reading. Waiting forever would freeze ``recv()``, so after
+        ``CLOSE_TIMEOUT`` we drop the line (which also wakes that stuck send).
+
+        Raises:
+            ConnectionClosedError: If the stream is gone or the reply timed out.
+
+        """
+        try:
+            async with timeout(CLOSE_TIMEOUT):
+                await self._write(opcode, payload)
+        except TimeoutError:
+            self._writer.abort()
+            message = f"could not send {opcode.name} within {CLOSE_TIMEOUT:g}s"
+            raise ConnectionClosedError(message) from None
 
     async def _write(self, opcode: Opcode, payload: bytes) -> None:
         """Encode one final frame (masked if we are the client) and send it."""

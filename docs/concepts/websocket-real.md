@@ -203,8 +203,15 @@ Client                                 Server
   X  TCP connection closed               X
 ```
 
-`close()` sends the goodbye, waits up to 5 seconds (`CLOSE_TIMEOUT`) for
-the reply, then closes the stream. Calling it twice is harmless. Once a
+`close()` sends the goodbye, waits for the reply, then closes the
+stream -- all within 5 seconds (`CLOSE_TIMEOUT`). That one deadline
+covers *sending* the goodbye too: if another task is stuck pushing a big
+message to a peer that has stopped reading, our `CLOSE` would be stuck
+in the queue behind it. When time runs out we drop the line at once
+(`abort()`), which also frees the stuck sender, and the conversation
+ends with 1006. Pongs we owe the peer get the same deadline: a pong
+that cannot get out in time ends the conversation instead of freezing
+`recv()`. Calling it twice is harmless. Once a
 conversation is over, every `recv()` and send raises the same
 `WebSocketClosed` (it is a `ConnectionClosedError`, so old handlers that
 catch that still work), and `ws.closed` / `ws.close_code` tell you how
@@ -330,7 +337,9 @@ the rest.
   an empty CLOSE is 1005; a 1-byte CLOSE or reserved code is 1002.
 - Bad UTF-8 is 1007, oversize messages (one frame or several) are 1009,
   unmasked client frames and stray/overlapping fragments are 1002.
-- A peer that vanishes gives 1006; `close()` gives up after its timeout.
+- A peer that vanishes gives 1006; `close()` gives up after its timeout,
+  even when a big send to a peer that never reads is stuck ahead of the
+  goodbye; a pong stuck the same way ends `recv()` with 1006.
 - After closing, every call raises `WebSocketClosed`.
 - Bad handshakes get `400 Bad Request`; the client rejects a non-101
   answer, a wrong accept value, and a server that hangs up.
