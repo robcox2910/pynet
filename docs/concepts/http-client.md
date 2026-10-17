@@ -74,3 +74,7 @@ page.
 
 Many modern APIs speak JSON. Head to [JSON Client](json-client.md)
 to learn how to talk to web APIs.
+
+## See also
+
+- [PyWeb: requests](https://robcox2910.github.io/pyweb/concepts/requests/) -- the server that reads the letters this client sends.
