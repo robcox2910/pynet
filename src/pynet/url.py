@@ -46,6 +46,10 @@ def parse_url(raw: str) -> URL:
     Returns:
         A parsed URL object.
 
+    Raises:
+        ValueError: If the text after the last ":" of the host is not a
+            whole number (a port like ``example.com:abc``).
+
     """
     # Extract scheme.
     scheme = "http"
