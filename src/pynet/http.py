@@ -218,6 +218,9 @@ def _take_content_length(body: bytes, content_length: str) -> bytes:
     except ValueError:
         msg = f"Bad Content-Length: {content_length!r}"
         raise HTTPError(msg) from None
+    if length < 0:
+        msg = f"Bad Content-Length: {content_length!r}"
+        raise HTTPError(msg)
     if len(body) < length:
         msg = f"Response ended early: expected {length} body bytes, got {len(body)}"
         raise HTTPError(msg)
@@ -248,6 +251,9 @@ def _decode_chunked(body: bytes) -> bytes:
         except ValueError:
             msg = f"Bad chunk size: {size_text!r}"
             raise HTTPError(msg) from None
+        if size < 0:  # a negative size would send us backwards, round and round
+            msg = f"Bad chunk size: {size_text!r}"
+            raise HTTPError(msg)
         if size == 0:
             return bytes(result)
         start = line_end + 2
