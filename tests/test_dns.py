@@ -60,3 +60,11 @@ class TestIsValidIpv4:
     def test_invalid_addresses_return_false(self, address: str) -> None:
         """Invalid IPv4 addresses return False."""
         assert is_valid_ipv4(address) is False
+
+    def test_digits_from_other_alphabets_are_not_valid(self) -> None:
+        """Regression: an Arabic-Indic zero passed as an octet, found by a property test."""
+        assert is_valid_ipv4("0.0.0.\u0660") is False
+
+    def test_digit_like_symbols_are_not_valid(self) -> None:
+        """Regression: a superscript two crashed with ValueError, found by a property test."""
+        assert is_valid_ipv4("0.0.0.\u00b2") is False
