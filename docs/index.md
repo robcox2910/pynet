@@ -1,3 +1,8 @@
+---
+title: "Build your own networking library in Python"
+description: "Networking built from scratch in Python: DNS, TCP, UDP, HTTP, WebSockets, TLS and an event loop, explained simply with working code."
+---
+
 # What Is Networking?
 
 ## Telephones for Computers

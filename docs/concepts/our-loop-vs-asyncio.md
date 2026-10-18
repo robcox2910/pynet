@@ -1,3 +1,8 @@
+---
+title: "Build your own event loop: how it compares to asyncio"
+description: "How a hand-built event loop compares with Python's asyncio: what they share, what asyncio adds, and when each is the right choice."
+---
+
 # Our Loop vs asyncio
 
 ## A Go-Kart and a Factory Car
