@@ -13,6 +13,8 @@ from pynet.url import URL, parse_url
 
 BUFFER_SIZE = 4096
 HTTP_VERSION = "HTTP/1.1"
+DECIMAL_DIGITS = frozenset("0123456789")
+HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
 
 
 class Response:
@@ -198,11 +200,28 @@ def _parse_status_line(line: str) -> int:
     if len(parts) < min_status_parts:
         msg = f"Malformed status line: {line!r}"
         raise HTTPError(msg)
+    return _plain_number(parts[1], f"Malformed status code in status line: {line!r}")
+
+
+def _plain_number(text: str, error_message: str, *, hexadecimal: bool = False) -> int:
+    """Read ``text`` as a plain run of digits (0-9, or 0-9 and a-f when ``hexadecimal``).
+
+    Python's ``int()`` is kinder than HTTP: it reads ``"-5"``, ``"+3"``,
+    ``"1_0"`` and ``" 7 "``, and in base 16 also ``"0x3"``. A size or a
+    status code in HTTP is only ever digits, so anything else is refused.
+
+    Raises:
+        HTTPError: With ``error_message``, if ``text`` is empty or holds
+            anything but those digits (or is too long for ``int`` to read).
+
+    """
+    digits = HEX_DIGITS if hexadecimal else DECIMAL_DIGITS
+    if not text or not set(text) <= digits:
+        raise HTTPError(error_message)
     try:
-        return int(parts[1])
-    except ValueError:
-        msg = f"Malformed status code in status line: {line!r}"
-        raise HTTPError(msg) from None
+        return int(text, 16 if hexadecimal else 10)
+    except ValueError:  # thousands of digits: past Python's int-reading limit
+        raise HTTPError(error_message) from None
 
 
 def _header(headers: dict[str, str], name: str) -> str:
@@ -213,14 +232,7 @@ def _header(headers: dict[str, str], name: str) -> str:
 
 def _take_content_length(body: bytes, content_length: str) -> bytes:
     """Keep exactly the number of body bytes the server promised."""
-    try:
-        length = int(content_length)
-    except ValueError:
-        msg = f"Bad Content-Length: {content_length!r}"
-        raise HTTPError(msg) from None
-    if length < 0:
-        msg = f"Bad Content-Length: {content_length!r}"
-        raise HTTPError(msg)
+    length = _plain_number(content_length, f"Bad Content-Length: {content_length!r}")
     if len(body) < length:
         msg = f"Response ended early: expected {length} body bytes, got {len(body)}"
         raise HTTPError(msg)
@@ -246,14 +258,10 @@ def _decode_chunked(body: bytes) -> bytes:
             msg = "Chunked response ended before the final chunk"
             raise HTTPError(msg)
         size_text = body[position:line_end].split(b";", 1)[0].strip()
-        try:
-            size = int(size_text, 16)
-        except ValueError:
-            msg = f"Bad chunk size: {size_text!r}"
-            raise HTTPError(msg) from None
-        if size < 0:  # a negative size would send us backwards, round and round
-            msg = f"Bad chunk size: {size_text!r}"
-            raise HTTPError(msg)
+        # Only hex digits: a size like "-6" would send us backwards, round and round.
+        size = _plain_number(
+            size_text.decode("latin-1"), f"Bad chunk size: {size_text!r}", hexadecimal=True
+        )
         if size == 0:
             return bytes(result)
         start = line_end + 2
