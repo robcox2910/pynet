@@ -13,6 +13,8 @@ DEFAULT_PORTS: dict[str, int] = {
     "https": 443,
     "ftp": 21,
 }
+HIGHEST_PORT = 65535
+DECIMAL_DIGITS = frozenset("0123456789")
 
 
 @dataclass(frozen=True)
@@ -48,7 +50,10 @@ def parse_url(raw: str) -> URL:
 
     Raises:
         ValueError: If the text after the last ":" of the host is not a
-            whole number (a port like ``example.com:abc``).
+            port: plain digits 0-9 making a number from 0 to 65535. So
+            ``example.com:abc``, ``:-1``, ``:99999`` and ``: 80`` are all
+            refused. IPv6 addresses in brackets (``http://[::1]/``) are not
+            supported: their colons look like a port.
 
     """
     # Extract scheme.
@@ -86,7 +91,7 @@ def parse_url(raw: str) -> URL:
     host = host_port
     if ":" in host_port:
         host, port_str = host_port.rsplit(":", maxsplit=1)
-        port = int(port_str)
+        port = _parse_port(port_str)
 
     return URL(
         scheme=scheme,
@@ -96,3 +101,16 @@ def parse_url(raw: str) -> URL:
         query=query,
         fragment=fragment,
     )
+
+
+def _parse_port(text: str) -> int:
+    """Read a port: only the digits 0-9 (no signs, spaces or ``_``), at most 65535.
+
+    Raises:
+        ValueError: If ``text`` is not such a port.
+
+    """
+    if not text or not set(text) <= DECIMAL_DIGITS or int(text) > HIGHEST_PORT:
+        msg = f"Invalid port: {text!r}"
+        raise ValueError(msg)
+    return int(text)
