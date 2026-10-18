@@ -62,6 +62,8 @@ MOST_WS_PAYLOAD_BYTES = 300
 # header claiming more is refused (FrameTooLargeError) instead of waited for.
 JUNK_PAYLOAD_LIMIT = 64
 WS_LIMIT = 1 << 20
+# An over-long octet has this many digits: past int()'s 4,300-digit limit.
+OVER_LONG_DIGITS = 5000
 
 pytestmark = PROPERTY_TIMEOUT  # see tests/strategies.py
 
@@ -190,7 +192,8 @@ def octet_ish_text() -> st.SearchStrategy[str]:
     """Make one piece of an IPv4 address: often a good number, sometimes an odd one."""
     good = ["0", "1", "25", "255"]
     # "\u0661" is an Arabic-Indic one, "\u00b2" a superscript two.
-    odd = ["256", "01", "1000", "", "a", " 1", "+1", "\u0661", "\u00b2"]
+    # The last one is far longer than any octet: past 4,300 digits, int() itself refuses.
+    odd = ["256", "01", "1000", "", "a", " 1", "+1", "\u0661", "\u00b2", "1" * OVER_LONG_DIGITS]
     return st.sampled_from(good) | st.sampled_from(odd)
 
 
