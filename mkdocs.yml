@@ -67,6 +67,7 @@ nav:
   - URLs: concepts/urls.md
   - "WebSocket, For Real": concepts/websocket-real.md
   - WebSocket: concepts/websocket.md
+  - Property Testing: property-testing.md
   # series-nav:start
   - The series:
       - Series home: https://robcox2910.github.io/
