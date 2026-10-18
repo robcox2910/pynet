@@ -8,6 +8,7 @@ from pynet.errors import DNSError
 LOCALHOST_IPV4 = "127.0.0.1"
 IPV4_OCTET_COUNT = 4
 MAX_OCTET_VALUE = 255
+LONG_OCTET_DIGITS = 5000
 
 
 class TestResolve:
@@ -60,3 +61,15 @@ class TestIsValidIpv4:
     def test_invalid_addresses_return_false(self, address: str) -> None:
         """Invalid IPv4 addresses return False."""
         assert is_valid_ipv4(address) is False
+
+    def test_digits_from_other_alphabets_are_not_valid(self) -> None:
+        """Regression: an Arabic-Indic zero passed as an octet, found by a property test."""
+        assert is_valid_ipv4("0.0.0.\u0660") is False
+
+    def test_digit_like_symbols_are_not_valid(self) -> None:
+        """Regression: a superscript two crashed with ValueError, found by a property test."""
+        assert is_valid_ipv4("0.0.0.\u00b2") is False
+
+    def test_very_long_octet_is_not_valid(self) -> None:
+        """Regression: an octet of 5,000 digits hit Python's int() limit and raised ValueError."""
+        assert is_valid_ipv4("1.1.1." + "1" * LONG_OCTET_DIGITS) is False

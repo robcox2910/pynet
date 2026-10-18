@@ -159,6 +159,38 @@ class TestResponseParsingEdgeCases:
         with pytest.raises(HTTPError, match="ended early"):
             _parse_response(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nshort")
 
+    def test_negative_chunk_size_is_an_http_error(self) -> None:
+        """Regression: a chunk size of -6 sent the parser round in circles forever (property test)."""
+        raw = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n-6\r\n"
+        with pytest.raises(HTTPError, match="chunk"):
+            _parse_response(raw)
+
+    def test_negative_content_length_is_an_http_error(self) -> None:
+        """Regression: Content-Length: -2 quietly chopped two bytes off the body."""
+        with pytest.raises(HTTPError, match="Content-Length"):
+            _parse_response(b"HTTP/1.1 200 OK\r\nContent-Length: -2\r\n\r\nhello")
+
+    def test_negative_status_code_is_an_http_error(self) -> None:
+        """Regression: int() read the status code "-5" as minus five."""
+        with pytest.raises(HTTPError, match="status"):
+            _parse_response(b"HTTP/1.1 -5 OK\r\n\r\n")
+
+    def test_content_length_with_underscore_is_an_http_error(self) -> None:
+        """Regression: int() read "1_0" as 10, as Python numbers allow, but HTTP doesn't."""
+        with pytest.raises(HTTPError, match="Content-Length"):
+            _parse_response(b"HTTP/1.1 200 OK\r\nContent-Length: 1_0\r\n\r\n0123456789")
+
+    def test_content_length_with_plus_sign_is_an_http_error(self) -> None:
+        """Regression: int() read "+3" as 3; HTTP sizes are plain digits."""
+        with pytest.raises(HTTPError, match="Content-Length"):
+            _parse_response(b"HTTP/1.1 200 OK\r\nContent-Length: +3\r\n\r\nabc")
+
+    def test_chunk_size_with_0x_is_an_http_error(self) -> None:
+        """Regression: int(..., 16) read "0x3" as 3; chunk sizes are bare hex digits."""
+        raw = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n0x3\r\nabc\r\n0\r\n\r\n"
+        with pytest.raises(HTTPError, match="chunk"):
+            _parse_response(raw)
+
     def test_non_numeric_content_length_is_an_http_error(self) -> None:
         """A Content-Length that isn't a number is reported clearly."""
         with pytest.raises(HTTPError, match="Content-Length"):

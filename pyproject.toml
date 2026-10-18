@@ -155,6 +155,7 @@ venv = ".venv"
 root = "tests"
 extraPaths = ["."]
 reportPrivateUsage = false
+reportUnknownMemberType = false
 
 [tool.commitizen]
 name = "cz_conventional_commits"

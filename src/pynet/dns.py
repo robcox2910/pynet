@@ -66,7 +66,13 @@ def is_valid_ipv4(address: str) -> bool:
 def _is_valid_octet(part: str) -> bool:
     """Check whether one dotted piece of an IPv4 address is valid."""
     max_octet = 255
-    # Reject non-digits, and leading zeros like "01" or "001".
-    if not part.isdigit() or (len(part) > 1 and part[0] == "0"):
+    max_digits = 3
+    # Reject anything but the ten digits 0-9 (Python's isdigit also says
+    # yes to "²" and to digits from other alphabets, like "٣"), leading
+    # zeros like "01" or "001", and more than 3 digits (thousands of them
+    # would even make int() itself refuse).
+    if not (part.isascii() and part.isdigit()) or (len(part) > 1 and part[0] == "0"):
+        return False
+    if len(part) > max_digits:
         return False
     return 0 <= int(part) <= max_octet
