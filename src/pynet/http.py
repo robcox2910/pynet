@@ -8,13 +8,12 @@ browser visits a webpage.
 import socket
 from urllib.parse import urlencode
 
+from pynet._digits import is_plain_digits
 from pynet.errors import HTTPError, NetConnectionError
 from pynet.url import URL, parse_url
 
 BUFFER_SIZE = 4096
 HTTP_VERSION = "HTTP/1.1"
-DECIMAL_DIGITS = frozenset("0123456789")
-HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
 
 
 class Response:
@@ -215,8 +214,7 @@ def _plain_number(text: str, error_message: str, *, hexadecimal: bool = False) -
             anything but those digits (or is too long for ``int`` to read).
 
     """
-    digits = HEX_DIGITS if hexadecimal else DECIMAL_DIGITS
-    if not text or not set(text) <= digits:
+    if not is_plain_digits(text, hexadecimal=hexadecimal):
         raise HTTPError(error_message)
     try:
         return int(text, 16 if hexadecimal else 10)

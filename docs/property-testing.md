@@ -328,6 +328,12 @@ bugs. It takes a few minutes:
 uv run pytest tests/test_properties.py tests/test_model.py --no-cov --hypothesis-profile=thorough
 ```
 
+If the model check ever fails in the normal run, you may see a **Timeout**
+instead of a short story. Hypothesis shrinks a failing story by replaying it many
+times, and that can use up the 10-second limit before it finishes. Run it again with
+`--hypothesis-profile=thorough`: its limit is 600 seconds, so shrinking has time to
+finish and the report shows the shrunk story.
+
 The normal run uses a fixed seed, so it tries the same inputs every time and a passing
 build means the same thing on every computer. The thorough run is random, so each time you
 run it the postman brings brand-new letters and cuts them in brand-new places. Both

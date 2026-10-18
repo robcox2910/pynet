@@ -10,6 +10,7 @@ educational interface.
 
 import socket
 
+from pynet._digits import is_plain_digits
 from pynet.errors import DNSError
 
 
@@ -71,7 +72,7 @@ def _is_valid_octet(part: str) -> bool:
     # yes to "²" and to digits from other alphabets, like "٣"), leading
     # zeros like "01" or "001", and more than 3 digits (thousands of them
     # would even make int() itself refuse).
-    if not (part.isascii() and part.isdigit()) or (len(part) > 1 and part[0] == "0"):
+    if not is_plain_digits(part) or (len(part) > 1 and part[0] == "0"):
         return False
     if len(part) > max_digits:
         return False

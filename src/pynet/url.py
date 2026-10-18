@@ -7,6 +7,8 @@ what to request, and what extra info to send.
 
 from dataclasses import dataclass, field
 
+from pynet._digits import is_plain_digits
+
 # Default ports for common schemes.
 DEFAULT_PORTS: dict[str, int] = {
     "http": 80,
@@ -14,7 +16,6 @@ DEFAULT_PORTS: dict[str, int] = {
     "ftp": 21,
 }
 HIGHEST_PORT = 65535
-DECIMAL_DIGITS = frozenset("0123456789")
 
 
 @dataclass(frozen=True)
@@ -110,7 +111,7 @@ def _parse_port(text: str) -> int:
         ValueError: If ``text`` is not such a port.
 
     """
-    if not text or not set(text) <= DECIMAL_DIGITS or int(text) > HIGHEST_PORT:
+    if not is_plain_digits(text) or int(text) > HIGHEST_PORT:
         msg = f"Invalid port: {text!r}"
         raise ValueError(msg)
     return int(text)
