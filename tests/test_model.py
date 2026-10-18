@@ -31,7 +31,6 @@ See ``docs/property-testing.md`` for the walk-through.
 import unittest
 from typing import cast
 
-import pytest
 from hypothesis import settings
 from hypothesis import strategies as st
 from hypothesis.stateful import Bundle, RuleBasedStateMachine, invariant, rule
@@ -40,12 +39,9 @@ from pynet.framing import MAX_FRAME_SIZE, PEER_CLOSED_MESSAGE, encode_frame
 from pynet.messaging import Message, MessageDecoder, MessageType, encode_message
 from pynet.messaging.codec import JsonValue
 from tests.pretend_pipe import FrameInbox
-from tests.strategies import call_signs, json_bodies, messages, messages_of_kind
+from tests.strategies import PROPERTY_TIMEOUT, call_signs, json_bodies, messages, messages_of_kind
 
-# A normal run (100 examples) must finish well inside pytest's 10-second
-# limit, so a hang fails fast. The thorough run tries 20 times as many
-# examples, so it gets 10 minutes instead.
-pytestmark = pytest.mark.timeout(10 if settings().max_examples <= 100 else 600)  # noqa: PLR2004
+pytestmark = PROPERTY_TIMEOUT  # see tests/strategies.py
 
 # One delivery lets through at most this many bytes. Small bites cut
 # headers and envelopes in half far more often than big ones.
@@ -93,9 +89,10 @@ class ConversationMachine(RuleBasedStateMachine):
         return finished
 
     @rule(target=calls, request=messages_of_kind(MessageType.REQUEST))
-    def send_request(self, request: Message) -> int | None:
+    def send_request(self, request: Message) -> int:
         """Send a request, and remember its call sign for a later reply."""
         self.send(request)
+        assert request.id is not None  # messages_of_kind gives every request an id
         return request.id
 
     @rule(call=st.one_of(calls, call_signs()), body=json_bodies())
@@ -135,8 +132,10 @@ class ConversationMachine(RuleBasedStateMachine):
         assert self.inbox.goodbye == PEER_CLOSED_MESSAGE
 
 
-# why: 20 steps find the same bugs; 50 (the default) is most of the run time
-ConversationMachine.TestCase.settings = settings(stateful_step_count=20)
+# why: 10 steps find the same bugs (every deliberate bug shrank to 4 steps or
+# fewer), and each step invents a whole message; 50 (the default) took most
+# of the 10-second limit
+ConversationMachine.TestCase.settings = settings(stateful_step_count=10)
 # pytest runs this like any other test class: one run plays 100 random stories.
 # (Hypothesis doesn't say what type ``TestCase`` is, so ``cast`` tells pyright.)
 TestConversationModel = cast("type[unittest.TestCase]", ConversationMachine.TestCase)

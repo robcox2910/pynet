@@ -7,6 +7,8 @@ is a named function, named for what it makes, with a one-line docstring.
 
 from itertools import pairwise
 
+import pytest
+from hypothesis import settings
 from hypothesis import strategies as st
 
 from pynet.messaging import Message, MessageType
@@ -23,6 +25,21 @@ MOST_ITEMS_PER_BOX = 3
 # cut a message across many chunks without making every example huge.
 MOST_ATTACHMENTS = 3
 MOST_ATTACHMENT_BYTES = 40
+
+
+# --- Time limits ----------------------------------------------------------------
+# pytest stops any test after 10 seconds (see addopts in pyproject.toml), so a
+# hang fails fast. A normal run of 100 examples must finish well inside that.
+# The thorough run (the profile in conftest.py) tries 2,000, so the property
+# tests and the model check get 10 minutes instead. Each test module sets
+# ``pytestmark = PROPERTY_TIMEOUT``.
+THOROUGH_PROFILE = "thorough"
+NORMAL_RUN_TIMEOUT_SECONDS = 10
+THOROUGH_RUN_TIMEOUT_SECONDS = 600
+_is_thorough_run = settings.get_current_profile_name() == THOROUGH_PROFILE
+PROPERTY_TIMEOUT = pytest.mark.timeout(
+    THOROUGH_RUN_TIMEOUT_SECONDS if _is_thorough_run else NORMAL_RUN_TIMEOUT_SECONDS
+)
 
 
 def json_text() -> st.SearchStrategy[str]:

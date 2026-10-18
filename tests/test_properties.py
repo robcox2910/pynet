@@ -27,7 +27,7 @@ import contextlib
 import ipaddress
 
 import pytest
-from hypothesis import given, settings
+from hypothesis import given
 from hypothesis import strategies as st
 
 from pynet.base64 import b64_decode_bytes, b64_encode
@@ -52,7 +52,7 @@ from pynet.ws import (
     parse_http_head,
 )
 from tests.pretend_pipe import FrameInbox, PretendPipe, pretend_reader, read_until_hang_up, run_now
-from tests.strategies import chunks_of, messages
+from tests.strategies import PROPERTY_TIMEOUT, chunks_of, messages
 
 # A WebSocket payload over 125 bytes needs a longer length field, so test
 # payloads go a little past that; 64 KiB ones (the longest field) would
@@ -63,10 +63,7 @@ MOST_WS_PAYLOAD_BYTES = 300
 JUNK_PAYLOAD_LIMIT = 64
 WS_LIMIT = 1 << 20
 
-# A normal run (100 examples) must finish well inside pytest's 10-second
-# limit, so a hang fails fast. The thorough run tries 20 times as many
-# examples, so it gets 10 minutes instead.
-pytestmark = pytest.mark.timeout(10 if settings().max_examples <= 100 else 600)  # noqa: PLR2004
+pytestmark = PROPERTY_TIMEOUT  # see tests/strategies.py
 
 # --- Strategies: recipes for random inputs -----------------------------------
 # messages() and chunks_of() live in tests/strategies.py, shared with the
@@ -120,7 +117,14 @@ def bricks_joined(bricks: list[bytes]) -> st.SearchStrategy[bytes]:
 
 def number_ish_bytes() -> st.SearchStrategy[bytes]:
     """Make bytes that are often a number (decimal or hex), and often nearly one."""
-    return bricks_joined([b"0", b"5", b"f", b"-", b";", b" ", b"\r\n", b"hello"])
+    bricks = [b"0", b"5", b"f", b"-", b"+", b"_", b"x", b";", b" ", b"\r\n", b"hello"]
+    return bricks_joined(bricks)
+
+
+def status_lines() -> st.SearchStrategy[bytes]:
+    """Make a status line whose code is a number, nearly a number, or missing."""
+    with_code = number_ish_bytes().map(b"HTTP/1.1 %b OK\r\n".__mod__)
+    return with_code | st.just(b"HTTP/1.1\r\n")
 
 
 def http_headers() -> st.SearchStrategy[bytes]:
@@ -132,7 +136,7 @@ def http_headers() -> st.SearchStrategy[bytes]:
 def http_responses() -> st.SearchStrategy[bytes]:
     """Make junk shaped like an HTTP response: a status line, a header or two, a blank line, a body."""
     return st.tuples(
-        st.sampled_from([b"HTTP/1.1 200 OK\r\n", b"HTTP/1.1\r\n"]),
+        status_lines(),
         st.lists(http_headers(), max_size=2).map(b"".join),
         st.sampled_from([b"\r\n", b""]),
         number_ish_bytes(),

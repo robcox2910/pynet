@@ -148,9 +148,10 @@ class ConversationMachine(RuleBasedStateMachine):
         self.model: list[Message] = []
 
     @rule(target=calls, request=messages_of_kind(MessageType.REQUEST))
-    def send_request(self, request: Message) -> int | None:
+    def send_request(self, request: Message) -> int:
         """Send a request, and remember its call sign for a later reply."""
         self.send(request)
+        assert request.id is not None  # messages_of_kind gives every request an id
         return request.id
 
     @rule(size=delivery_sizes())
@@ -191,7 +192,7 @@ Piece by piece:
 - **`@invariant()`** runs after *every* step: the receiver may be behind,
   but never wrong and never ahead.
 - **`.TestCase`** turns the machine into a test class pytest can run. One
-  run plays 100 random stories of up to 20 steps.
+  run plays 100 random stories of up to 10 steps.
 
 The `repr` in each `assert` is on purpose: `1 == 1.0` and `True == 1` in
 Python, but a body that went in as `1` must not come back as `1.0`.
@@ -293,13 +294,21 @@ Both inputs are now example tests in `tests/test_dns.py`:
 ```python
     def test_digits_from_other_alphabets_are_not_valid(self) -> None:
         """Regression: an Arabic-Indic zero passed as an octet, found by a property test."""
-        assert is_valid_ipv4("0.0.0.٠") is False
+        assert is_valid_ipv4("0.0.0.\u0660") is False
 ```
+
+`"\u0660"` is Python's way of writing `٠` with only plain keyboard
+characters: `\u` means "the character with this Unicode number", and 0660
+is the Arabic-Indic zero. That keeps the test readable in any editor, and
+nobody can mistake it for a dot or a real 0.
 
 The long run of `test_http_parser_only_raises_http_error` found one more:
 a chunked body whose chunk size was `-6` sent the parser round in circles
 forever, until the timeout stopped it. A hang can't be shrunk, so we cut
-that input down by hand; negative chunk sizes are now an `HTTPError`.
+that input down by hand. The cause was Python's `int()`, which is kinder
+than HTTP: it reads `-6`, `+3`, `1_0` and even `0x3`. Status codes, sizes
+and chunk sizes are now read as plain digits only; anything else is an
+`HTTPError`.
 
 ## Run It Yourself
 
