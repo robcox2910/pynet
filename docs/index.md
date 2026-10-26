@@ -107,6 +107,14 @@ with a "Next Up" link to the following one.
 Runnable examples live in the `examples/` folder: an echo server, a job
 runner, a chat room, a heartbeat demo and a WebSocket echo server.
 
+## Install
+
+```bash
+pip install fromscratch-pynet
+```
+
+Or get the whole series at once with `pip install fromscratch-pystack`. To read the code or run the tests, clone it from [GitHub](https://github.com/robcox2910/pynet).
+
 ## Let's Start!
 
 Head to [URLs](concepts/urls.md) to learn how web addresses are
