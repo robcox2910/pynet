@@ -1,5 +1,5 @@
 [project]
-name = "pynet"
+name = "fromscratch-pynet"
 dynamic = ["version"]
 description = "An educational networking library built from scratch in Python"
 readme = "README.md"
